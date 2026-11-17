@@ -1,8 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.9.16 — 2026-11-17
+
+A fix for Vietnamese: choosing it in the settings now sticks.
+
+**Agent**
+- Settings › Display › Language: choosing Tiếng Việt sticks. The agent didn't know the new language yet and saved
+  it as "Follow the phone", so a phone set to another language stayed in that one (#198,
+  [sonvivu](https://github.com/sonvivu)).
+
+## 0.9.15 — 2026-11-17
+
+Four new widgets: Dictation types what you say on the phone into the PC, Photo frame shows a slideshow from a folder,
+App console gives the app in front its own keys and dial, and Spectrum bars shows what the PC is playing. Also a Quick
+Settings tile, Vietnamese, controls at the top of the screen, and a choice of the adapters the network meters count.
 
 **New widget**
+- **Spectrum bars** (Windows): a live spectrum analyzer of the sound the PC is playing, with LED segments and falling
+  peak caps in four colour styles. The agent analyzes the default output device in memory and sends the phone only 48
+  loudness levels per frame; audio is never stored or sent. It captures only while the widget is on the phone's screen
+  (not under the night screen or in a hidden Smart Stack card) and stops a few seconds after it leaves (#195, #196,
+  [joshua-jebadurai](https://github.com/joshua-jebadurai)).
 - **Dictation**: tap the microphone and speak, and the text is typed into the app in front on the PC. The phone's own
   speech recognizer does the listening (on most phones Google's, which may use its servers; the widget's "Recognize on
   the phone only" option uses Android 12's on-device recognizer, which keeps the audio on the phone, and refuses on
