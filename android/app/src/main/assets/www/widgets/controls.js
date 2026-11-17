@@ -60,12 +60,23 @@ function slider(label, send, max = 100) {
   input.onchange = async () => { editing = false; try { await send(+input.value); } catch (e) { fail(e); } };
   // a touch that does not move the fader sends no "change": the fader must follow the computer again afterwards
   input.onpointerup = input.onpointercancel = input.onlostpointercapture = input.onblur = () => { editing = false; };
-  return { input, number, set(value) { if (!editing && document.activeElement !== input) input.value = String(value); number.textContent = String(editing ? input.value : value); fill(); } };
+  return { input, number, set(value) { if (!editing) input.value = String(value); number.textContent = String(editing ? input.value : value); fill(); } };
 }
-function meter(value) { const e = h('div', 'deck-meter', h('i')); e.firstChild.style.transform = `scaleX(${Math.max(0, Math.min(1, value || 0))})`; return e; }
+function meter(value) { const e = h('div', 'deck-meter', h('i')); e.firstChild.style.setProperty('--peak', Math.max(0, Math.min(1, value || 0))); return e; }
+
+function audioStateIcon(muted, microphone) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' })) svg.setAttribute(key, value);
+  const shapes = microphone ? ['M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0Z', 'M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8']
+    : ['M11 4 6 8H3v8h3l5 4Z', ...(muted ? [] : ['M15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14'])];
+  if (muted) shapes.push('M3 3 21 21');
+  for (const d of shapes) { const path = document.createElementNS(ns, 'path'); path.setAttribute('d', d); svg.append(path); }
+  return svg;
+}
 
 function audioView(box, options, mode) {
-  const root = h('div', `deck-list ${options.layout === 'vertical' ? 'deck-vertical' : ''}`);
+  const root = h('div', `deck-list deck-audio ${options.layout === 'vertical' ? 'deck-vertical' : ''}`);
   box.append(root);
   const rows = new Map();
   return data => {
@@ -87,23 +98,27 @@ function audioView(box, options, mode) {
         const kind = mode === 'app' || mode === 'apps' ? 'session' : 'device';
         const controls = slider(item.name + ' volume', value => deckCommand(kind, { id: item.id, value }));
         const mute = button('Mute', () => deckCommand(kind, { id: item.id, muted: !row.item.muted }), 'Mute ' + item.name);
+        mute.classList.add('deck-mute');
         const balance = [];
-        el.append(name, signal);
+        el.append(name);
         if (mode === 'balance') {
           const left = slider('Left channel', value => deckCommand('device', { id: item.id, op: 'left', value }));
           const right = slider('Right channel', value => deckCommand('device', { id: item.id, op: 'right', value }));
           left.set(item.volume); right.set(item.volume);
           balance.push(left, right);
           el.append(h('label', '', 'L', left.input, left.number), h('label', '', 'R', right.input, right.number));
-        } else if (mode !== 'meter') el.append(controls.input, h('div', 'deck-channel-foot', controls.number, mute));
+        } else if (mode !== 'meter') el.append(h('div', 'deck-volume-row', mute, h('div', 'deck-fader', signal, controls.input), controls.number));
+        else el.append(signal);
         row = { el, name, signal, controls, mute, item, balance }; rows.set(item.id, row);
       }
       row.item = item; row.name.textContent = item.name;
-      row.controls.set(item.volume); row.mute.textContent = item.muted ? t('w.unmute') : t('w.mute');
+      row.name.title = item.name;
+      row.controls.set(item.volume); row.mute.replaceChildren(audioStateIcon(item.muted, mode === 'mic' || item.direction === 'input'));
+      row.mute.title = item.muted ? t('w.unmute') : t('w.mute');
       row.controls.input.disabled = item.canControl === false; row.mute.disabled = item.canControl === false;
       row.balance.forEach((slider, channel) => { const value = item.channelVolumes?.[channel]; slider.input.disabled = value == null; slider.set(value || 0); if (value == null) slider.number.textContent = 'n/a'; });
       row.mute.setAttribute('aria-pressed', String(item.muted));
-      row.el.classList.toggle('deck-muted', item.muted); row.signal.firstChild.style.transform = `scaleX(${Math.max(0, Math.min(1, item.peak || 0))})`;
+      row.el.classList.toggle('deck-muted', item.muted); row.signal.firstChild.style.setProperty('--peak', Math.max(0, Math.min(1, item.peak || 0)));
       return row.el;
     });
     reconcile(root, nodes);

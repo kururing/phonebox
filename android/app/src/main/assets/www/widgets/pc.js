@@ -159,6 +159,7 @@ W.discord = {
       const key = JSON.stringify([data, busy, [...open], box.clientHeight]);
       if (!force && key === lastKey) return;
       lastKey = key;
+      const scrollTop = box.querySelector('.dc-servers')?.scrollTop || 0;
       if (!data) { box.replaceChildren(h('div', 'empty', t('w.loading'))); return; }
       if (!data.enabled) { box.replaceChildren(h('div', 'w-title', 'Discord'), h('div', 'empty', t('w.discord.turnOn'))); return; }
       const s = data.snapshot;
@@ -213,6 +214,9 @@ W.discord = {
         kids.push(h('div', 'dc-notes', ...s.notifications.slice(0, 6).map((n) => h('div', 'dc-note', h('b', null, n.title), h('span', null, n.body)))));
       }
       box.replaceChildren(...kids);
+      // Rebuilding for a press or a snapshot update must not send the user back to the first server.
+      const servers = box.querySelector('.dc-servers');
+      if (servers) servers.scrollTop = scrollTop;
     };
     const tick = every(2000, async () => { await load(); render(); });
     return { update: () => { tick(); render(); } };
