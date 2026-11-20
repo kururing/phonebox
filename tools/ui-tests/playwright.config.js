@@ -17,7 +17,7 @@ module.exports = defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: `${python} "${path.join(root, 'tools', 'pages', 'build.py')}" "${site}" && ${python} -m http.server 8781 --bind 127.0.0.1 --directory "${site}"`,
+    command: `${python} "${path.join(root, 'tools', 'pages', 'build.py')}" "${site}" && ${python} "${path.join(__dirname, 'serve.py')}" "${site}" 8781`,
     url: 'http://127.0.0.1:8781/panel/',
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,

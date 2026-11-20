@@ -23,13 +23,42 @@ Last updated: 2026-11-15 (PhoneBox 0.9.6).
   `VIBRATE`, and for the microphone (`RECORD_AUDIO`) only when a Dictation widget's button is tapped for the first time.
 - **Computer data shown on the panel** (CPU, GPU, memory, disks, processes, media, volume, AI coding sessions and
   quotas, Docker / Podman, OBS) is read locally and goes only to your phone: over the USB cable (`adb reverse` to
-  `127.0.0.1`) or, after pairing, over Wi-Fi / Tailscale with a pinned certificate and a key.
+  `127.0.0.1`, with a key only the PhoneBox app has) or, after pairing, over Wi-Fi / Tailscale with a pinned certificate and a key. On Linux, an Intel GPU's
+  load comes from the GPU usage counters in other processes' `/proc/<pid>/fdinfo` (the counters only, nothing those
+  programs draw or compute); processes of other users are read only when Linux allows the agent to read them (normally
+  as root or with `CAP_SYS_PTRACE`).
+- **Claude Code conversation** (off by default): with Settings â€º Claude Code â€º "Show the conversation on the phone" on,
+  tapping a Claude Code session in the sessions widget asks the agent for its last 30 messages (your prompts and
+  Claude's replies, each cut at 4000 characters) and its last 12 steps. The agent reads them from that chat's file in
+  `~/.claude/projects` and sends them only to your phone, only for a session that is running, and only while the
+  details are open. A step is the tool name plus a file name, the program a command starts with (never the command
+  line) or a web host; tool output, thinking and file contents are never sent. Nothing is stored on the phone or the
+  computer. With the switch off the agent refuses the request and no prompt or reply text is sent.
+- **Cursor sessions** (off by default; **Settings â€º General â€º Cursor sessions**): while enabled, the agent scans recent
+  `*.jsonl` files under `~/.cursor/projects/*/agent-transcripts` (about every 30 seconds for discovery) and reads a
+  bounded tail of each file to parse the last record's `role` in memory. Only that role and the file times are kept for
+  the panel; chat text is never shown, stored or sent. Project labels use the folder basename from Cursor's
+  `workspaceStorage/*/workspace.json` `folder` URI (cached about a minute), sent to the phone as the session's project
+  name over the same local USB / paired Wi-Fi link as other panel data. Turning the setting off stops the scan.
+- **Claude Code chat titles** (off by default): with Settings â€º Claude Code â€º "Show Claude Code chat titles on the
+  phone" on, the sessions widget shows each chat's title, the name you gave it or the one Claude Code wrote, which it
+  often draws from your first prompt. The agent reads only the title records at the end of the chat's file in
+  `~/.claude/projects`, never the prompts, replies or tool arguments, and sends the title only to your phone, like the
+  rest of this list. With the switch off the file is not opened and no title is sent.
 - **Sound for the Spectrum bars widget** (Windows): while an enabled page with the widget is on the phone's screen,
   the agent captures what the default output device plays, analyzes it in memory and sends only 48 loudness levels
   per frame to the phone. Audio is never stored or sent; capture stops a few seconds after the widget leaves the
   screen, and removing the widget or turning its page off turns it off.
-- **Local services**: LibreHardwareMonitor's web server (`127.0.0.1:8085`), a running Antigravity language server
+- **Mouse control for the Trackpad widget**: touches and scroll gestures are sent directly from the phone to the agent
+  on your computer (over USB or pinned-TLS Wi-Fi) to control the cursor and scroll. No mouse or gesture data is ever
+  recorded, stored or sent outside your local connection. It is active only while an enabled page contains the Trackpad
+  widget with **Allow controlling the mouse from the phone** enabled (off by default).
+- **CPU sensors (Windows)**: the bundled LibreHardwareMonitorLib runs in a CPU-only elevated worker. It sends only
+  temperature readings to the unelevated agent through a current-user named pipe and stops with that agent. It opens
+  no network listener and accepts no commands from the phone.
+- **Local services**: LibreHardwareMonitor's optional fallback web server (`127.0.0.1:8085`), a running Antigravity language server
   (loopback), the Docker / Podman socket, OBS WebSocket and the Discord desktop app's local connection (a named pipe
+  or socket on this computer) are local connections.
   or socket on this computer) are local connections.
 
 [`scripts/uninstall.ps1 -Purge`](scripts/uninstall.ps1) and [`scripts/uninstall.sh --purge`](scripts/uninstall.sh)
@@ -44,18 +73,18 @@ identifies your GitHub account to GitHub.
 
 | What | Where | What is sent | How to turn it off |
 |---|---|---|---|
-| Update check | `api.github.com` (release info), `github.com` (downloads) | The repository name; with `gh` signed in and only when GitHub turns away an anonymous request, your GitHub CLI token, to `api.github.com` only | **Settings › General › Updates › Install new releases automatically** turns off installing. The check every 6 hours stays; it sends nothing about you |
-| Network latency (ping metric, "ping high" rule) | `1.1.1.1` (Cloudflare DNS) by default, an ICMP echo every 5 seconds | An empty ping packet | From 0.9.6: empty **Settings › General › Ping**, or enter another host. 0.9.5 and earlier: not switchable; block ICMP to `1.1.1.1` in your firewall |
-| Weather (phone) | `api.open-meteo.com`, every 15 minutes | The coordinates of the city you chose (Tallinn by default) | From 0.9.6: asked only while a page has a widget that shows the weather (weather, forecast, sun & moon, a clock with its weather line, or a Custom HTML widget, which gets the weather too); remove those, or turn off the clock's weather line. 0.9.5 and earlier: asked while the panel runs; choose a city you are comfortable sharing in **Settings › General › Weather** |
+| Update check | `api.github.com` (release info), `github.com` (downloads) | The repository name; with `gh` signed in and only when GitHub turns away an anonymous request, your GitHub CLI token, to `api.github.com` only | **Settings â€º General â€º Updates â€º Install new releases automatically** turns off installing. The check every 6 hours stays; it sends nothing about you |
+| Network latency (ping metric, "ping high" rule) | `1.1.1.1` (Cloudflare DNS) by default, an ICMP echo every 5 seconds | An empty ping packet | From 0.9.6: empty **Settings â€º General â€º Ping**, or enter another host. 0.9.5 and earlier: not switchable; block ICMP to `1.1.1.1` in your firewall |
+| Weather (phone) | `api.open-meteo.com`, every 15 minutes | The coordinates of the city you chose (Tallinn by default), and the forecast model when one is picked in **Settings â€º General â€º Weather** | From 0.9.6: asked only while a page has a widget that shows the weather (weather, forecast, sun & moon, a clock with its weather line, or a Custom HTML widget, which gets the weather too); remove those, or turn off the clock's weather line. 0.9.5 and earlier: asked while the panel runs; choose a city you are comfortable sharing in **Settings â€º General â€º Weather** |
 | Air quality widget (phone) | `air-quality-api.open-meteo.com`, while the widget is on a page | The same coordinates | Remove the widget |
 | City search (settings page) | `geocoding-api.open-meteo.com` | The city name you type, only when you search | Don't search |
+| Claude quota | `api.anthropic.com/api/oauth/usage`, every 3 minutes after a successful check (sooner after a failed one, as often as every 30 seconds while the network is down; less often when Anthropic asks it to wait; agents running on this computer share one schedule) while Claude Code is signed in on this computer, whether or not a page shows a quota widget | The OAuth token Claude Code stores in `~/.claude/.credentials.json`, or on macOS, when that file doesn't exist, the "Claude Code-credentials" item from the default keychain search list (normally the login Keychain), read with `security find-generic-password`; read-only, PhoneBox never refreshes it. Only the Claude Code command-line sign-in is used; the Claude Desktop app's own sign-in is never read | No switch yet: it stops when Claude Code is signed out on this computer |
 
 ## Connections made only when you use a feature
 
 | Feature | Where | What is sent |
 |---|---|---|
-| Discord widget | `discord.com/api/oauth2/token`, once at login and when the token needs renewing; `cdn.discordapp.com`, once per server icon and avatar shown (the agent fetches them, the phone never contacts Discord; the rest goes through the Discord app on this PC, locally). Turn off in **Settings › General › Discord** | The application's client ID and secret, and the one-time login code or the saved refresh token; for images only the image's id and hash, which Discord already knows |
-| Claude quota | `api.anthropic.com/api/oauth/usage` | The OAuth token Claude Code stores in `~/.claude/.credentials.json`, or on macOS, when that file doesn't exist, the "Claude Code-credentials" item from the default keychain search list (normally the login Keychain), read with `security find-generic-password`; read-only, PhoneBox never refreshes it |
+| Discord widget | `discord.com/api/oauth2/token`, once at login and when the token needs renewing; `cdn.discordapp.com`, once per server icon and avatar shown (the agent fetches them, the phone never contacts Discord; the rest goes through the Discord app on this PC, locally). Turn off in **Settings â€º General â€º Discord** | The application's client ID and secret, and the one-time login code or the saved refresh token; for images only the image's id and hash, which Discord already knows |
 | GitHub widget | `api.github.com`, through your own GitHub CLI (`gh`) | Whatever `gh` sends with its own sign-in |
 | Hacker News widget (phone) | `hacker-news.firebaseio.com` | Nothing but the request |
 | Exchange rates widget (phone) | `api.frankfurter.dev` | The currencies you chose |
@@ -67,10 +96,11 @@ identifies your GitHub account to GitHub.
 | Calendars | The iCal addresses you add | The request to that address |
 | Dictation widget | Only while you hold a dictation open (the microphone button is red, at most a minute): the phone's own speech recognizer hears you. On most phones that is Google's, which may send the audio to Google. With the widget's **Recognize on the phone only** option the app uses Android's on-device recognizer, which keeps the audio on the phone; that needs Android 12 or later and the offline language, and on older Android the option refuses to listen rather than fall back. The recognized text goes from the phone to the agent and is typed into the app in front if the widget's **Type the text on the computer** option is on (off by default). Neither the audio nor the text is stored or logged by PhoneBox. Android asks for the microphone the first time the button is tapped; you can take it back in Android's app settings | Google (or your phone's recognizer), only while dictating; nothing with on-device recognition |
 | App console widget | Nothing. On Windows the agent reads the process name of the focused window to pick the matching app profile; that name stays on the computer, and the phone only gets the profile's name and key labels (a key without a label shows its keys, such as ctrl+z). With the widget's **Send keys to the computer** option on (off by default), a tap sends the profile's id and the key's slot, and the agent presses the keys only if the app in front still matches that profile | Nothing |
-| News feeds widget | The RSS and Atom addresses you add in **Settings › General**, fetched by the agent at most every 15 minutes and only while a page shows the widget; the phone never contacts the feed sites. With the widget's **Open articles on the PC** option on (off by default), tapping a headline opens its article in the computer's browser. Turn the requests off by removing the feeds in **Settings › General › News feeds**, or the widget from your pages | The request to that address, with the feed's last `ETag` / `Last-Modified` so an unchanged feed is not sent again |
+| News feeds widget | The RSS and Atom addresses you add in **Settings â€º General**, fetched by the agent at most every 15 minutes and only while a page shows the widget; the phone never contacts the feed sites. With the widget's **Open articles on the PC** option on (off by default), tapping a headline opens its article in the computer's browser. Turn the requests off by removing the feeds in **Settings â€º General â€º News feeds**, or the widget from your pages | The request to that address, with the feed's last `ETag` / `Last-Modified` so an unchanged feed is not sent again |
 | Home Assistant | Your Home Assistant server | The access token you enter |
 | Image widget | The image address you enter | The request to that address |
-| Photo frame widget | Nothing outside your network: the photos in the folder you choose in **Settings › General** go from the agent to the phone over USB or the paired Wi-Fi link (on Windows and macOS large JPEG and PNG photos are scaled down first), one at a time and only while an enabled page shows the widget. Clearing the folder setting or removing the widget stops it, and clearing the folder also deletes the scaled copies. Photos that are only in the cloud (OneDrive Files On-Demand and the like) are skipped, so nothing is downloaded for the slideshow | Nothing |
+| Camera widget | The RTSP cameras you add in **Settings â€º General â€º Cameras**, pulled by ffmpeg on this computer only while an enabled page shows a Camera widget for them, and stopped a few seconds after it leaves the screen. The phone gets JPEG pictures (5 a second by default, 1 to 10 per camera) over USB or the paired Wi-Fi link and never contacts the camera. The addresses, with the user names and passwords in them, stay in `config.json` and never go to the phone, but while a camera runs its address is visible in this computer's process list (ffmpeg's command line). The pictures are not stored, and the log names the camera, never its address | The camera's own RTSP login and stream requests |
+| Photo frame widget | Nothing outside your network: the photos in the folder you choose in **Settings â€º General** go from the agent to the phone over USB or the paired Wi-Fi link (on Windows and macOS large JPEG and PNG photos are scaled down first), one at a time and only while an enabled page shows the widget. Clearing the folder setting or removing the widget stops it, and clearing the folder also deletes the scaled copies. Photos that are only in the cloud (OneDrive Files On-Demand and the like) are skipped, so nothing is downloaded for the slideshow | Nothing |
 | Album art on Linux | The artwork address your music player reports | The request to that address |
 | OSC controls (Control Deck) | The OSC host and port you configure, over UDP | The control value |
 | Antigravity quota through its CLI | Whatever the Antigravity CLI contacts with its own sign-in (PhoneBox only starts it) | Decided by the CLI |

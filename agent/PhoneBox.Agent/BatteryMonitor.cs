@@ -11,10 +11,15 @@ public sealed record DeviceBattery(string Name, int Level, string Kind, bool? Ch
 ///  - Windows: Bluetooth battery property via SetupAPI (what Settings › Bluetooth shows) and Razer USB HID devices.
 ///  - Linux: UPower (BlueZ devices, Logitech receivers, the laptop battery).
 ///  - macOS: ioreg (Magic Mouse / Keyboard / Trackpad) and system_profiler (AirPods and other headphones).
-/// Read once a minute, only while a phone shows the widget.
+/// Read every 20 seconds (a minute on macOS, where system_profiler is slow), only while a phone shows the widget.
 /// </summary>
 public sealed partial class BatteryMonitor(ILogger<BatteryMonitor> log) : BackgroundService
 {
+    private const long NoRequest = long.MinValue;
+    internal const long ActiveRefreshIntervalMs = 20_000;
+    /// <summary>macOS reads headphones with system_profiler, which takes seconds of CPU: keep it at once a minute.</summary>
+    internal const long MacRefreshIntervalMs = 60_000;
+    internal static long RefreshIntervalMs(bool macOS) => macOS ? MacRefreshIntervalMs : ActiveRefreshIntervalMs;
     private volatile IReadOnlyList<DeviceBattery> _devices = [];
 #if WINDOWS
     private readonly object _publishLock = new();
@@ -22,8 +27,8 @@ public sealed partial class BatteryMonitor(ILogger<BatteryMonitor> log) : Backgr
     private IReadOnlyList<DeviceBattery> _razerDevices = [];
     private Task? _razerTask;
 #endif
-    private long _lastRequest;
-    private long _readAt;
+    private long _lastRequest = NoRequest;
+    private long? _readAt;
 
     public IReadOnlyList<DeviceBattery> Snapshot()
     {
@@ -35,10 +40,12 @@ public sealed partial class BatteryMonitor(ILogger<BatteryMonitor> log) : Backgr
     {
         while (!ct.IsCancellationRequested)
         {
-            var wanted = Environment.TickCount64 - Interlocked.Read(ref _lastRequest) < 120_000;
-            if (wanted && Environment.TickCount64 - _readAt > 60_000)
+            var lastRequest = Interlocked.Read(ref _lastRequest);
+            var now = Environment.TickCount64;
+            var wanted = lastRequest != NoRequest && now - lastRequest < 120_000;
+            if (wanted && (_readAt is null || now - _readAt.Value > RefreshIntervalMs(OperatingSystem.IsMacOS())))
             {
-                _readAt = Environment.TickCount64;
+                _readAt = now;
 #if WINDOWS
                 try
                 {
@@ -93,6 +100,9 @@ public sealed partial class BatteryMonitor(ILogger<BatteryMonitor> log) : Backgr
         return "other";
     }
 
+    internal static bool IncludeWindowsBatteryDevice(bool hasConnectedProperty, ReadOnlySpan<byte> value)
+        => !hasConnectedProperty || value.Length == 0 || value[0] != 0;
+
 #if WINDOWS
     // ---------------------------------------------------------------- Windows
     private static List<DeviceBattery> Windows()
@@ -100,6 +110,7 @@ public sealed partial class BatteryMonitor(ILogger<BatteryMonitor> log) : Backgr
         var found = new List<(string Name, int Level, string Id)>();
         var battery = new DEVPROPKEY { fmtid = new Guid("104EA319-6EE2-4701-BD47-8DDBF425BBE5"), pid = 2 };
         var friendly = new DEVPROPKEY { fmtid = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), pid = 14 };
+        var connected = new DEVPROPKEY { fmtid = new Guid("83DA6326-97A6-4088-9453-A1923F573B29"), pid = 15 };
         var set = SetupDiGetClassDevsW(IntPtr.Zero, null, IntPtr.Zero, 0x2 | 0x4); // DIGCF_PRESENT | DIGCF_ALLCLASSES
         if (set == IntPtr.Zero || set == new IntPtr(-1)) return [];
         try
@@ -112,6 +123,8 @@ public sealed partial class BatteryMonitor(ILogger<BatteryMonitor> log) : Backgr
                 if (!SetupDiGetDeviceInstanceIdW(set, ref data, idBuf, idBuf.Length, out _)) continue;
                 var id = new string(idBuf).TrimEnd('\0');
                 if (!id.StartsWith("BTH", StringComparison.OrdinalIgnoreCase)) continue;
+                var hasConnected = SetupDiGetDevicePropertyW(set, ref data, ref connected, out _, buf, (uint)buf.Length, out var connectedSize, 0);
+                if (!IncludeWindowsBatteryDevice(hasConnected, buf.AsSpan(0, (int)Math.Min(connectedSize, (uint)buf.Length)))) continue;
                 if (!SetupDiGetDevicePropertyW(set, ref data, ref battery, out _, buf, (uint)buf.Length, out var size, 0) || size < 1) continue;
                 int level = buf[0];
                 if (level > 100) continue;
@@ -185,20 +198,39 @@ public sealed partial class BatteryMonitor(ILogger<BatteryMonitor> log) : Backgr
             if (json is not null)
             {
                 using var doc = JsonDocument.Parse(json);
-                foreach (var section in doc.RootElement.GetProperty("SPBluetoothDataType").EnumerateArray())
-                    if (section.TryGetProperty("device_connected", out var connected))
-                        foreach (var dev in connected.EnumerateArray())
-                            foreach (var prop in dev.EnumerateObject())
-                            {
-                                int? Level(string key) => prop.Value.TryGetProperty(key, out var v) && int.TryParse(v.GetString()?.TrimEnd('%'), out var n) ? n : null;
-                                var levels = new[] { Level("device_batteryLevelLeft"), Level("device_batteryLevelRight"), Level("device_batteryLevelMain") }.Where(x => x is not null).ToList();
-                                if (levels.Count == 0 || list.Any(d => d.Name == prop.Name)) continue;
-                                list.Add(new DeviceBattery(prop.Name, levels.Min()!.Value, KindOf(prop.Name) is "other" ? "headphones" : KindOf(prop.Name), null));
-                            }
+                AddMacBluetoothBatteries(doc.RootElement, list);
             }
         }
         catch { }
         return list;
+    }
+
+    internal static void AddMacBluetoothBatteries(JsonElement root, List<DeviceBattery> list)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("SPBluetoothDataType", out var sections) || sections.ValueKind != JsonValueKind.Array) return;
+
+        foreach (var section in sections.EnumerateArray())
+        {
+            if (section.ValueKind != JsonValueKind.Object ||
+                !section.TryGetProperty("device_connected", out var connected) || connected.ValueKind != JsonValueKind.Array) continue;
+
+            foreach (var device in connected.EnumerateArray())
+            {
+                if (device.ValueKind != JsonValueKind.Object) continue;
+                foreach (var prop in device.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind != JsonValueKind.Object) continue;
+                    int? Level(string key) => prop.Value.TryGetProperty(key, out var value) &&
+                        value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString()?.TrimEnd('%'), out var level) ? level : null;
+
+                    var levels = new[] { Level("device_batteryLevelLeft"), Level("device_batteryLevelRight"), Level("device_batteryLevelMain") }.Where(x => x is not null).ToList();
+                    if (levels.Count == 0 || list.Any(d => d.Name == prop.Name)) continue;
+                    var kind = KindOf(prop.Name);
+                    list.Add(new DeviceBattery(prop.Name, levels.Min()!.Value, kind is "other" ? "headphones" : kind, null));
+                }
+            }
+        }
     }
 #endif
 }

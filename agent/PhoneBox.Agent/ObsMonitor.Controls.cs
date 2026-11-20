@@ -5,15 +5,34 @@ namespace PhoneBox.Agent;
 public sealed partial class ObsMonitor
 {
     private readonly SemaphoreSlim _deckGate = new(1, 1);
-    private JsonObject? _deck;
+    /// <summary>A built deck and the OBS session it describes; it is served only while that session is current.</summary>
+    private sealed record DeckCache(JsonObject Deck, System.Net.WebSockets.ClientWebSocket Session);
+    private volatile DeckCache? _deck;
     private long _deckAt;
     private readonly Lock _deckRefreshGate = new();
     private Task<JsonObject>? _deckRefresh;
 
+    private void InvalidateDeck()
+    {
+        _deck = null;
+        Interlocked.Exchange(ref _deckAt, 0);
+    }
+
+    private JsonObject DisconnectedDeck() =>
+        new() { ["connected"] = false, ["error"] = _snap.Error ?? "Configure the OBS connection in desktop settings" };
+
+    // Turning OBS off in the settings stops the deck at once, before the connection loop notices.
+    private bool DeckUsable() => _snap.Connected && config.Get().Obs.Enabled;
+
+    /// <summary>The cached deck if it belongs to the current session (and, with <paramref name="fresh"/>, is recent).</summary>
+    private JsonObject? CachedDeck(bool fresh = true) =>
+        _deck is { } cached && ReferenceEquals(cached.Session, _ws)
+        && (!fresh || Environment.TickCount64 - Interlocked.Read(ref _deckAt) < 1500) ? cached.Deck : null;
+
     public async Task<JsonObject> DeckSnapshot(CancellationToken ct)
     {
-        if (!_snap.Connected) return new() { ["connected"] = false, ["error"] = _snap.Error ?? "Configure the OBS connection in desktop settings" };
-        if (_deck is not null && Environment.TickCount64 - _deckAt < 1500) return _deck;
+        if (!DeckUsable()) return DisconnectedDeck();
+        if (CachedDeck() is { } cached) return cached;
         Task<JsonObject> refresh;
         lock (_deckRefreshGate)
         {
@@ -23,24 +42,30 @@ public sealed partial class ObsMonitor
         // Discovery can involve many inputs. Keep the phone proxy responsive while one shared refresh completes.
         var completed = await Task.WhenAny(refresh, Task.Delay(1000, ct));
         ct.ThrowIfCancellationRequested();
+        if (!DeckUsable()) return DisconnectedDeck();
         if (completed == refresh) return await refresh;
-        return _deck ?? new() { ["connected"] = false, ["loading"] = true, ["error"] = "Discovering OBS controls; waiting for OBS" };
+        return CachedDeck(fresh: false) ?? new() { ["connected"] = false, ["loading"] = true, ["error"] = "Discovering OBS controls; waiting for OBS" };
     }
 
     private async Task<JsonObject> BuildDeckSnapshot(CancellationToken ct)
     {
-        if (!_snap.Connected) return new() { ["connected"] = false, ["error"] = _snap.Error ?? "Configure the OBS connection in desktop settings" };
-        if (_deck is not null && Environment.TickCount64 - _deckAt < 1500) return _deck;
+        var session = _ws;
+        if (!_snap.Connected || session is null || session.State != System.Net.WebSockets.WebSocketState.Open)
+            return DisconnectedDeck();
+        if (CachedDeck() is { } fast) return fast;
         await _deckGate.WaitAsync(ct);
         try
         {
-            if (_deck is not null && Environment.TickCount64 - _deckAt < 1500) return _deck;
+            if (!_snap.Connected || !ReferenceEquals(_ws, session) || session.State != System.Net.WebSockets.WebSocketState.Open)
+                return DisconnectedDeck();
+            if (CachedDeck() is { } fresh) return fresh;
             async Task<JsonNode?> Optional(string request, JsonObject? args = null)
             { try { return await Request(request, args, ct); } catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; } catch { return null; } }
             var rawInputs = (await Optional("GetInputList"))?["inputs"] as JsonArray;
             var inputs = new JsonArray();
             foreach (var input in rawInputs?.Take(64) ?? [])
             {
+                if (!_snap.Connected || !ReferenceEquals(_ws, session)) return DisconnectedDeck();
                 var name = input?["inputName"]?.GetValue<string>(); if (string.IsNullOrEmpty(name)) continue;
                 var args = new JsonObject { ["inputName"] = name };
                 var volume = await Optional("GetInputVolume", args);
@@ -58,7 +83,9 @@ public sealed partial class ObsMonitor
             var transition = await Optional("GetCurrentSceneTransition");
             var replay = await Optional("GetReplayBufferStatus");
             var camera = await Optional("GetVirtualCamStatus");
-            _deck = new JsonObject
+            if (!_snap.Connected || !ReferenceEquals(_ws, session) || session.State != System.Net.WebSockets.WebSocketState.Open || !config.Get().Obs.Enabled)
+                return DisconnectedDeck();
+            JsonObject? built = new JsonObject
             {
                 ["connected"] = true, ["scene"] = scene, ["scenes"] = new JsonArray(_snap.Scenes.Select(s => (JsonNode?)JsonValue.Create(s)).ToArray()),
                 ["inputs"] = inputs, ["sources"] = items, ["streaming"] = _snap.Streaming, ["recording"] = _snap.Recording,
@@ -68,19 +95,35 @@ public sealed partial class ObsMonitor
                 ["replayAvailable"] = replay is not null, ["replayActive"] = replay?["outputActive"]?.DeepClone(),
                 ["cameraAvailable"] = camera is not null, ["cameraActive"] = camera?["outputActive"]?.DeepClone(),
             };
-            _deckAt = Environment.TickCount64; return _deck;
+            lock (_sessionGate)
+            {
+                // The session may have been retired since the check above; then its cleanup already ran and this
+                // deck must neither be cached nor reported as connected.
+                if (!_snap.Connected || !ReferenceEquals(_ws, session)) built = null;
+                else
+                {
+                    _deck = new(built, session);
+                    Interlocked.Exchange(ref _deckAt, Environment.TickCount64);
+                }
+            }
+            return built ?? DisconnectedDeck();
         }
         finally { _deckGate.Release(); }
     }
 
+    private bool DeckControlAllowed() =>
+        config.Get().Widgets(enabledPagesOnly: true).Any(w => (w.Type == "obs" || w.Type.StartsWith("obs-")) && w.Bool("control") == true);
+
     public async Task<DeckResult> DeckAct(string action, string? id, int? value, bool? enabled, CancellationToken ct)
     {
-        if (!config.Get().Widgets().Any(w => (w.Type == "obs" || w.Type.StartsWith("obs-")) && w.Bool("control") == true))
-            return new(false, "Enable OBS control in the widget's desktop settings");
+        const string controlOff = "Enable OBS control in the widget's desktop settings";
+        if (!DeckControlAllowed()) return new(false, controlOff);
         if (!_snap.Connected) return new(false, "OBS is not connected");
         try
         {
             var state = await DeckSnapshot(ct);
+            // discovery awaited OBS: the widget may have been hidden or its control turned off meanwhile
+            if (!DeckControlAllowed()) return new(false, controlOff);
             var inputs = state["inputs"] as JsonArray;
             switch (action)
             {

@@ -15,11 +15,15 @@ public static class Shortcuts
     public static string? Run(AgentConfig cfg, string id, ILogger log, PushStore? push = null, AudioControl? audio = null)
     {
         var sc = cfg.Shortcuts.FirstOrDefault(s => s.Id == id);
-        if (sc is null) return $"no such shortcut: {id}";
-        if (!sc.Toggle) return Execute(sc, log, cfg);
+        return sc is null ? $"no such shortcut: {id}" : RunCore(cfg, sc, log, push, audio, 0);
+    }
+
+    private static string? RunCore(AgentConfig? cfg, Shortcut sc, ILogger log, PushStore? push, AudioControl? audio, int depth)
+    {
+        if (!sc.Toggle) return Execute(sc, log, cfg, depth, push, audio);
         var on = State(sc, push, audio) ?? false;
         var target = on && sc.OffCmd is not null ? new Shortcut { Label = sc.Label, Cmd = sc.OffCmd, Args = sc.OffArgs, Cwd = sc.Cwd } : sc;
-        var err = Execute(target, log, cfg);
+        var err = Execute(target, log, cfg, depth, push, audio);
         if (err is null && sc.StateKey is null && sc.Cmd != "builtin:mute") Remembered[sc.Id] = !on;
         return err;
     }
@@ -53,7 +57,7 @@ public static class Shortcuts
     }
 
     /// <returns>An error message, or null on success.</returns>
-    public static string? Execute(Shortcut sc, ILogger log, AgentConfig? cfg = null, int depth = 0)
+    public static string? Execute(Shortcut sc, ILogger log, AgentConfig? cfg = null, int depth = 0, PushStore? push = null, AudioControl? audio = null)
     {
         try
         {
@@ -78,7 +82,7 @@ public static class Shortcuts
                             case "wait": Thread.Sleep(Math.Clamp(int.TryParse(value, out var ms) ? ms : 0, 0, 10_000)); break;
                             case "shortcut":
                                 var other = cfg?.Shortcuts.FirstOrDefault(s => s.Id == value) ?? throw new InvalidOperationException($"no such shortcut: {value}");
-                                if (Execute(other, log, cfg, depth + 1) is { } err) throw new InvalidOperationException(err);
+                                if (RunCore(cfg, other, log, push, audio, depth + 1) is { } err) throw new InvalidOperationException(err);
                                 break;
                             default: throw new InvalidOperationException($"unknown macro step \"{step}\" (use keys:, text:, wait: or shortcut:)");
                         }
@@ -106,7 +110,8 @@ public static class Shortcuts
                     else Unix("xset", "dpms", "force", "off");
                     break;
                 case "builtin:mute":
-                    new AudioControl().ToggleMute();
+                    // false: the output cannot be muted (macOS) or wpctl / pactl failed; a caller must not count it as done
+                    if (!(audio ?? new AudioControl()).ToggleMute()) throw new InvalidOperationException("could not toggle mute on the current output");
                     break;
 #endif
                 default:
@@ -160,8 +165,10 @@ public static class Shortcuts
     }
 
     /// <summary>
-    /// What to start instead when the default Terminal shortcut's program is missing: Windows Terminal (wt.exe) is not
-    /// part of Windows 10, and x-terminal-emulator only exists on Debian-family Linux (#73). Empty for other commands.
+    /// What to start instead when a default shortcut's program is missing: Windows Terminal (wt.exe) is not part of
+    /// Windows 10, x-terminal-emulator only exists on Debian-family Linux (#73), and the default Calculator, Settings and
+    /// System Monitor shortcuts name GNOME's apps, which a KDE, Xfce or MATE desktop usually doesn't have (#238). Without
+    /// this the missing name goes to xdg-open, which opens it as a web address. Empty for other commands.
     /// </summary>
     internal static string[] TerminalStandIns(string cmd, string? terminalEnv = null) => cmd.Trim().ToLowerInvariant() switch
     {
@@ -171,6 +178,9 @@ public static class Shortcuts
             .. string.IsNullOrWhiteSpace(terminalEnv) ? [] : new[] { terminalEnv.Trim() },
             "kgx", "gnome-terminal", "konsole", "xfce4-terminal", "mate-terminal", "lxterminal", "tilix", "alacritty", "kitty", "foot", "wezterm", "xterm",
         ],
+        "gnome-calculator" => ["kcalc", "mate-calc", "galculator", "qalculate-gtk", "xfce4-calculator"],
+        "gnome-control-center" => ["systemsettings", "systemsettings5", "xfce4-settings-manager", "mate-control-center", "cinnamon-settings", "budgie-control-center", "lxqt-config"],
+        "gnome-system-monitor" => ["plasma-systemmonitor", "ksysguard", "xfce4-taskmanager", "mate-system-monitor", "lxtask"],
         _ => [],
     };
 

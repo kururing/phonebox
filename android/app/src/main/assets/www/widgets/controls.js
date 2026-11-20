@@ -1,4 +1,4 @@
-import { API, PANEL_HEADERS, api, applyState, D, evSeq, h, haptic, toast, store, t } from '../main.js';
+import { API, PANEL_HEADERS, api, applyState, bridge, D, evSeq, h, en, haptic, icon, toast, store, t } from '../main.js';
 import { W } from '../registry.js';
 
 let cached = null, at = 0, epoch = 0, pending = null;
@@ -85,7 +85,7 @@ function audioView(box, options, mode) {
     if (mode === 'mic') items = items.filter(d => d.direction === 'input');
     if (mode === 'output') items = items.filter(d => d.direction === 'output');
     if (options.device) items = items.filter(d => d.id === options.device);
-    if (options.application) items = items.filter(d => d.name.toLowerCase().includes(options.application.toLowerCase()));
+    if (options.application) { const want = options.application.toLowerCase(); items = items.filter(d => [d.name, d.processName].some(n => n?.toLowerCase().includes(want))); }
     if (mode === 'mic' && !options.device) items = items.filter(d => d.default);
     if (mode === 'balance') items = items.filter(d => d.direction === 'output' && d.channels >= 2 && (options.device || d.default));
     if (!items.length) { empty(root, mode === 'app' ? 'Start the selected application and play audio' : 'No matching audio devices'); return; }
@@ -97,7 +97,8 @@ function audioView(box, options, mode) {
         const signal = meter(item.peak);
         const kind = mode === 'app' || mode === 'apps' ? 'session' : 'device';
         const controls = slider(item.name + ' volume', value => deckCommand(kind, { id: item.id, value }));
-        const mute = button('Mute', () => deckCommand(kind, { id: item.id, muted: !row.item.muted }), 'Mute ' + item.name);
+        const mute = button('', () => deckCommand(kind, { id: item.id, muted: !row.item.muted }), 'Mute ' + item.name);
+
         mute.classList.add('deck-mute');
         const balance = [];
         el.append(name);
@@ -113,8 +114,12 @@ function audioView(box, options, mode) {
       }
       row.item = item; row.name.textContent = item.name;
       row.name.title = item.name;
-      row.controls.set(item.volume); row.mute.replaceChildren(audioStateIcon(item.muted, mode === 'mic' || item.direction === 'input'));
-      row.mute.title = item.muted ? t('w.unmute') : t('w.mute');
+      row.controls.set(item.volume);
+      const muteAction = item.muted ? t('w.unmute') : t('w.mute');
+      row.mute.replaceChildren(audioStateIcon(item.muted, mode === 'mic' || item.direction === 'input'));
+      row.mute.title = muteAction;
+      row.mute.setAttribute('aria-label', muteAction + ' ' + item.name);
+
       row.controls.input.disabled = item.canControl === false; row.mute.disabled = item.canControl === false;
       row.balance.forEach((slider, channel) => { const value = item.channelVolumes?.[channel]; slider.input.disabled = value == null; slider.set(value || 0); if (value == null) slider.number.textContent = 'n/a'; });
       row.mute.setAttribute('aria-pressed', String(item.muted));
@@ -127,7 +132,16 @@ function audioView(box, options, mode) {
 }
 
 function chooser(box, options, which) {
-  const list = h('div', 'deck-list'); box.append(list);
+  const layout = ['horizontal', 'grid', 'vertical'].includes(options.layout) ? options.layout : 'vertical';
+  const list = h('div', `deck-list deck-chooser deck-chooser-${layout}`); box.append(list);
+  const labels = new Map();
+  for (const line of String(options.labels || '').split(/\r?\n/)) {
+    const spacedSeparator = line.lastIndexOf(' = ');
+    const separator = spacedSeparator >= 0 ? spacedSeparator + 1 : line.indexOf('=');
+    if (separator < 0) continue;
+    const name = line.slice(0, separator).trim(), label = line.slice(separator + 1).trim();
+    if (name && label) labels.set(name, label);
+  }
   let signature = '';
   return data => {
     const items = which === 'media' ? data.media || [] : which === 'plans' ? data.powerPlans || [] : (data.audio?.devices || []).filter(d => d.direction === which);
@@ -135,14 +149,15 @@ function chooser(box, options, which) {
     const roleIndex = {console:0,media:1,communications:2}[role];
     const chosen = which === 'media' ? selectedPlayer(data, options)?.id : roleIndex != null && ['input','output'].includes(which)
       ? data.audio?.defaults?.[which+':'+roleIndex] : items.find(d => d.default || d.state === 'Active')?.id;
-    const key = JSON.stringify([items.map(i => [i.id, i.name]), chosen]); if (key === signature) return; signature = key;
+    const key = JSON.stringify([items.map(i => [i.id, i.name]), chosen, layout, [...labels]]); if (key === signature) return; signature = key;
     if (!items.length) { empty(list, which === 'media' ? 'Start a media player on the computer' : 'No compatible devices found'); return; }
     list.replaceChildren(...items.map(item => {
-      const b = button(item.name, async () => {
+      const b = button(labels.get(item.name) || item.name, async () => {
         if (which === 'media') store.set('control-player', item.id);
         else await deckCommand(which === 'plans' ? 'power-plan' : 'default', { id: item.id, op:role });
         signature = '';
-      });
+      }, item.name);
+      b.title = item.name;
       b.classList.toggle('selected', item.id === chosen); b.setAttribute('aria-pressed', String(item.id === chosen)); return b;
     }));
   };
@@ -201,7 +216,7 @@ function mediaView(box, options, mode) {
     shuffle = button('Shuffle', () => call('shuffle', current.shuffle ? 0 : 1));
     repeat = button('Repeat', () => call('repeat', current.repeat === 'None' ? 1 : current.repeat === 'Track' ? 2 : 0));
     controls.append(shuffle, repeat);
-  } else controls.append(button('⏮', () => call('prev'), 'Previous track'), button('⏯', () => call('playpause'), 'Play or pause'), button('⏭', () => call('next'), 'Next track'));
+  } else controls.append(button(icon('skip-back'), () => call('prev'), 'Previous track'), button(icon('play'), () => call('playpause'), 'Play or pause'), button(icon('skip-forward'), () => call('next'), 'Next track'));
   return data => {
     current = selectedPlayer(data, options);
     title.textContent = current?.title || t('w.noMediaSelected'); source.textContent = current?.name || 'Choose a source in Media sources';
@@ -635,7 +650,7 @@ for (const [type, title, mode] of [
 ]) registerDeckWidget(type, title, mode);
 for (const type of Object.keys(groups)) registerDeckWidget(type, type.split('-').map(s => s[0].toUpperCase() + s.slice(1)).join(' '));
 
-W['meeting-status'] = W.onair;
+W['meeting-status'] = { needs: ['state', 'push'], create: (box, ctx) => W.onair.create(box, ctx) };
 
 async function integrationCommand(path, values = {}) {
   const result = await api('/controls/' + path + '?' + new URLSearchParams(values), 'POST', 20000);
@@ -725,12 +740,12 @@ integrationWidget('media-queue', 'Spotify queue', 'spotify/state', (root,data,se
   }
 });
 integrationWidget('media-favorites', 'Spotify favorites', 'spotify/state', (root,data,send)=>{
-  root.append(h('div','deck-track',data.current?.name || 'Nothing playing'),h('div','deck-caption',data.current?.artist || ''));
+  root.append(h('div','deck-track',data.current?.name || t('w.nothingPlaying')),h('div','deck-caption',data.current?.artist || ''));
   const b=button('Save to library',()=>send('favorite'));b.disabled=!data.current?.id;root.append(b);
 });
 W['meeting-timer'] = {needs:['tick'],create(box,{o}){
   const key='meeting-timer:'+ (o.timerId || 'default');
-  const clock=h('div','deck-track');box.classList.add('control-deck');box.append(h('div','w-title',o.title || 'Meeting timer'),clock);
+  const clock=h('div','deck-track');box.classList.add('control-deck');box.append(h('div','w-title',o.title || en('Meeting timer')),clock);
   let state=store.get(key,{elapsed:0,started:0});
   const persist=()=>store.set(key,state);
   const start=button(state.started?'Pause':'Start',()=>{state=store.get(key,state);if(state.started){state.elapsed+=Date.now()-state.started;state.started=0;}else state.started=Date.now();persist();render();});
@@ -738,3 +753,337 @@ W['meeting-timer'] = {needs:['tick'],create(box,{o}){
   function render(){state=store.get(key,state);const elapsed=state.elapsed+(state.started?Date.now()-state.started:0);clock.textContent=timeText(elapsed);start.textContent=state.started?t('w.pause'):t('w.start');start.setAttribute('aria-label',start.textContent);clock.classList.toggle('deck-overdue',elapsed>=(o.minutes || 30)*60000);}
   render();return {update:render};
 }};
+
+W.trackpad = {
+  needs: [],
+  create(box, { o }) {
+    box.classList.add('control-deck');
+    const controlEnabled = Boolean(o.control);
+    const sensitivity = Number(o.sensitivity) || 1.0;
+    const acceleration = o.acceleration !== false;
+    const scrollSpeed = Number(o.scrollSpeed) || 1.0;
+    const natural = Boolean(o.naturalScroll);
+    const holdDuration = Math.max(100, Number(o.holdDuration) || 350);
+    const scrollBar = o.scrollBar || 'right';
+    const scrollBarWidth = Math.max(16, Number(o.scrollBarWidth) || 36);
+
+    const surface = h('div', 'deck-trackpad-surface',
+      h('div', 'deck-trackpad-icon', icon(controlEnabled ? 'mouse' : 'lock')),
+      h('div', 'deck-trackpad-hint', !controlEnabled
+        ? 'Enable mouse control in widget settings'
+        : (scrollBar !== 'none'
+          ? 'Drag to move · Tap to click · Hold to drag · Bar or 2 fingers to scroll'
+          : 'Drag to move · Tap to click · Hold to drag · Two fingers to scroll'))
+    );
+
+    let scrollBarEl = null;
+    if (controlEnabled && scrollBar !== 'none') {
+      scrollBarEl = h('div', 'deck-trackpad-bar',
+        h('div', 'deck-trackpad-bar-icon',
+          h('span', null, '▲'),
+          h('span', null, '▼')
+        )
+      );
+      scrollBarEl.style.width = scrollBarWidth + 'px';
+    }
+
+    const pad = h('div', 'deck-trackpad' + (scrollBar === 'left' ? ' has-scroll-left' : ''), surface);
+    pad.setAttribute('tabindex', '0');
+    pad.setAttribute('role', 'region');
+    pad.setAttribute('aria-label', o.title || 'Trackpad');
+    if (scrollBarEl) pad.append(scrollBarEl);
+    box.append(h('div', 'w-title', o.title || 'Trackpad'), pad);
+
+    if (!controlEnabled) {
+      pad.classList.add('is-disabled');
+      return { update() {}, destroy() {} };
+    }
+
+    let ws = null, destroyed = false, reconnectTimer = null;
+    function getWsUrl() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      if (location.host && !location.host.includes('androidplatform.net')) return `${proto}//${location.host}/api/trackpad`;
+      return 'ws://127.0.0.1:8765/api/trackpad';
+    }
+    function connectWs() {
+      if (destroyed || (bridge && typeof bridge.trackpad === 'function')) return;
+      try {
+        ws = new WebSocket(getWsUrl());
+        ws.onclose = () => { if (!destroyed) reconnectTimer = setTimeout(connectWs, 2000); };
+        ws.onerror = () => { try { ws.close(); } catch (_) {} };
+      } catch (_) {
+        if (!destroyed) reconnectTimer = setTimeout(connectWs, 2000);
+      }
+    }
+    connectWs();
+
+    function send(msg) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(msg));
+      } else if (bridge && typeof bridge.trackpad === 'function') {
+        bridge.trackpad(msg.type || '', msg.dx || 0, msg.dy || 0, msg.delta ?? msg.dy ?? 0);
+      } else {
+        fetch('/api/trackpad', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(msg),
+          cache: 'no-store'
+        }).catch(() => {});
+      }
+    }
+
+    // Windows Precision Touchpad ballistics curve: 3.5x base gain with controlled +1.6x dynamic flick boost
+    function getGain(v) {
+      const vp = v * v;
+      return 3.5 + (1.6 * vp) / (2.0 + vp);
+    }
+
+    let accDx = 0, accDy = 0, moveScheduled = false;
+    function queueMove(dx, dy) {
+      accDx += dx; accDy += dy;
+      if (!moveScheduled) {
+        moveScheduled = true;
+        requestAnimationFrame(() => {
+          moveScheduled = false;
+          flushMove();
+        });
+      }
+    }
+    function flushMove() {
+      if (destroyed) return;
+      moveScheduled = false;
+      const sendDx = Math.round(accDx), sendDy = Math.round(accDy);
+      accDx -= sendDx; accDy -= sendDy;
+      if (sendDx !== 0 || sendDy !== 0) send({ type: 'move', dx: sendDx, dy: sendDy });
+    }
+
+    let accScrollX = 0, accScrollY = 0, scrollScheduled = false;
+    function queueScroll(dx, dy) {
+      accScrollX += dx;
+      accScrollY += dy;
+      if (!scrollScheduled) {
+        scrollScheduled = true;
+        requestAnimationFrame(() => {
+          scrollScheduled = false;
+          flushScroll();
+        });
+      }
+    }
+    function flushScroll() {
+      if (destroyed) return;
+      scrollScheduled = false;
+      const sx = Math.round(accScrollX);
+      const sy = Math.round(accScrollY);
+      accScrollX -= sx;
+      accScrollY -= sy;
+      if (sx !== 0 || sy !== 0) send({ type: 'scroll', dx: sx, dy: sy, delta: sy });
+    }
+
+    const activePointers = new Map();
+    let maxActivePointers = 0, moved = false, tapFired = false;
+    let isDragging = false, holdTimer = null;
+    let scrollAxis = null, cumScrollX = 0, cumScrollY = 0;
+
+    pad.addEventListener('pointerdown', (e) => {
+      e.stopPropagation(); e.preventDefault();
+      try { pad.setPointerCapture(e.pointerId); } catch (_) {}
+      const isBar = scrollBarEl && (e.target === scrollBarEl || scrollBarEl.contains(e.target));
+      if (isBar) scrollBarEl.classList.add('is-scrolling');
+      const now = performance.now();
+      activePointers.set(e.pointerId, {
+        startX: e.clientX, startY: e.clientY,
+        lastX: e.clientX, lastY: e.clientY,
+        downTime: now,
+        lastMoveTime: now,
+        history: [{ t: now, x: e.clientX, y: e.clientY }],
+        isBar,
+      });
+      maxActivePointers = Math.max(maxActivePointers, activePointers.size);
+      if (activePointers.size > 1) {
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+        if (isDragging) {
+          isDragging = false;
+          send({ type: 'mouseup' });
+        }
+        scrollAxis = null;
+        cumScrollX = 0;
+        cumScrollY = 0;
+      }
+      if (!isBar && activePointers.size === 1) {
+        moved = false;
+        tapFired = false;
+        holdTimer = setTimeout(() => {
+          if (!moved && !tapFired && maxActivePointers === 1 && activePointers.size === 1 && !isDragging) {
+            isDragging = true;
+            flushMove();
+            send({ type: 'mousedown' });
+            haptic();
+          }
+        }, holdDuration);
+      }
+    });
+
+    pad.addEventListener('pointermove', (e) => {
+      e.stopPropagation(); e.preventDefault();
+      const pt = activePointers.get(e.pointerId);
+      if (!pt) return;
+      const rawDx = e.clientX - pt.lastX, rawDy = e.clientY - pt.lastY;
+      pt.lastX = e.clientX; pt.lastY = e.clientY;
+
+      if (pt.isBar) {
+        const factor = natural ? 1 : -1;
+        queueScroll(0, rawDy * scrollSpeed * 10 * factor);
+        return;
+      }
+
+      if (Math.hypot(e.clientX - pt.startX, e.clientY - pt.startY) > 6) {
+        moved = true;
+        if (!isDragging && holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+      }
+
+      if (activePointers.size === 1) {
+        let gain = 1.0;
+        if (acceleration) {
+          const now = performance.now();
+          const elapsed = now - pt.lastMoveTime;
+          if (elapsed > 60) {
+            const dt = Math.max(12, Math.min(35, elapsed));
+            const dist = Math.hypot(rawDx, rawDy);
+            gain = getGain(dist / dt);
+            pt.history = [
+              { t: now - dt, x: pt.lastX - rawDx, y: pt.lastY - rawDy },
+              { t: now, x: e.clientX, y: e.clientY },
+            ];
+          } else {
+            pt.history.push({ t: now, x: e.clientX, y: e.clientY });
+            while (pt.history.length > 2 && (now - pt.history[0].t) > 45) {
+              pt.history.shift();
+            }
+            const oldest = pt.history[0];
+            const dt = now - oldest.t;
+            if (dt > 0) {
+              const dist = Math.hypot(e.clientX - oldest.x, e.clientY - oldest.y);
+              gain = getGain(dist / dt);
+            } else {
+              gain = getGain(0);
+            }
+          }
+          pt.lastMoveTime = now;
+        }
+        queueMove(rawDx * gain * sensitivity, rawDy * gain * sensitivity);
+      } else if (activePointers.size === 2) {
+        if (isDragging) {
+          isDragging = false;
+          send({ type: 'mouseup' });
+        }
+        const factorY = natural ? 1 : -1;
+        const factorX = natural ? -1 : 1;
+        // Two pointers concurrently fire pointermove; scale by 5 so total 2-finger sensitivity matches 1-finger scrollbar
+        const scale = scrollSpeed * 5;
+        const dxDelta = rawDx * scale * factorX;
+        const dyDelta = rawDy * scale * factorY;
+
+        cumScrollX += Math.abs(rawDx);
+        cumScrollY += Math.abs(rawDy);
+
+        if (!scrollAxis) {
+          if (cumScrollX + cumScrollY > 3) {
+            moved = true;
+            if (cumScrollY >= cumScrollX * 1.25) scrollAxis = 'y';
+            else if (cumScrollX >= cumScrollY * 1.25) scrollAxis = 'x';
+            else scrollAxis = 'free';
+          }
+        } else if (scrollAxis === 'y') {
+          if (Math.abs(rawDx) > Math.abs(rawDy) * 2.5 && Math.abs(rawDx) > 7) {
+            scrollAxis = 'x';
+            cumScrollX = Math.abs(rawDx);
+            cumScrollY = 0;
+          }
+        } else if (scrollAxis === 'x') {
+          if (Math.abs(rawDy) > Math.abs(rawDx) * 2.5 && Math.abs(rawDy) > 7) {
+            scrollAxis = 'y';
+            cumScrollY = Math.abs(rawDy);
+            cumScrollX = 0;
+          }
+        }
+
+        if (scrollAxis === 'y') {
+          queueScroll(0, dyDelta);
+        } else if (scrollAxis === 'x') {
+          queueScroll(dxDelta, 0);
+        } else {
+          const sendX = Math.abs(rawDx) >= 1.5 ? dxDelta : 0;
+          const sendY = Math.abs(rawDy) >= 1.5 ? dyDelta : 0;
+          queueScroll(sendX, sendY);
+        }
+      }
+    });
+
+    const onPointerEnd = (e) => {
+      e.stopPropagation(); e.preventDefault();
+      try { pad.releasePointerCapture(e.pointerId); } catch (_) {}
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+      const pt = activePointers.get(e.pointerId);
+      if (pt?.isBar) {
+        if (scrollBarEl) scrollBarEl.classList.remove('is-scrolling');
+        flushScroll();
+      } else if (isDragging) {
+        flushMove();
+        send({ type: 'mouseup' });
+        isDragging = false;
+        tapFired = true;
+      } else if (!moved && !tapFired && e.type !== 'pointercancel') {
+        const duration = pt ? performance.now() - pt.downTime : 9999;
+        if (maxActivePointers === 1 && duration < 300) {
+          flushMove();
+          send({ type: 'click' });
+          haptic();
+          tapFired = true;
+        } else if (maxActivePointers === 2 && duration < 400) {
+          flushMove();
+          flushScroll();
+          send({ type: 'rightClick' });
+          haptic();
+          tapFired = true;
+        }
+      }
+      activePointers.delete(e.pointerId);
+      if (activePointers.size < 2) {
+        scrollAxis = null;
+        cumScrollX = 0;
+        cumScrollY = 0;
+      }
+      if (activePointers.size === 0) {
+        maxActivePointers = 0; moved = false; tapFired = false;
+        if (scrollBarEl) scrollBarEl.classList.remove('is-scrolling');
+        flushMove(); flushScroll();
+      }
+    };
+
+    pad.addEventListener('pointerup', onPointerEnd);
+    pad.addEventListener('pointercancel', onPointerEnd);
+    pad.addEventListener('touchstart', (e) => { e.stopPropagation(); }, { passive: false });
+    pad.addEventListener('touchmove', (e) => { e.stopPropagation(); e.preventDefault(); }, { passive: false });
+    pad.addEventListener('touchend', (e) => { e.stopPropagation(); }, { passive: false });
+    pad.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); });
+
+    return {
+      update() {},
+      destroy() {
+        destroyed = true;
+        moveScheduled = false;
+        scrollScheduled = false;
+        accScrollX = 0;
+        accScrollY = 0;
+        scrollAxis = null;
+        cumScrollX = 0;
+        cumScrollY = 0;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (holdTimer) clearTimeout(holdTimer);
+        if (isDragging) { send({ type: 'mouseup' }); isDragging = false; }
+        if (ws) { try { ws.close(); } catch (_) {} ws = null; }
+        activePointers.clear();
+      }
+    };
+  }
+};

@@ -1,5 +1,11 @@
 PhoneBox agent: third-party software
 
+LibreHardwareMonitorLib 0.9.6 (Windows CPU sensors)
+https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+Mozilla Public License 2.0 — https://www.mozilla.org/MPL/2.0/
+Copyright LibreHardwareMonitor and Open Hardware Monitor contributors.
+The library is included without modifying its source; source is available at the repository above.
+
 The release agent is self-contained: it includes the .NET runtime and ASP.NET Core, QRCoder, and on Windows also
 Windows Forms, the C#/WinRT projection (WinRT.Runtime, Microsoft.Windows.SDK.NET) and NAudio.
 

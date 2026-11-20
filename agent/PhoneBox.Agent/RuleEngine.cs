@@ -161,7 +161,11 @@ public sealed class RuleEngine(ConfigStore config, PushStore push, SessionMonito
                 push.Set(r.Key, PushStore.ParseValue(value), null);
                 break;
             case "shortcut" when !string.IsNullOrWhiteSpace(r.Shortcut):
-                if (Shortcuts.Run(config.Get(), r.Shortcut, log, push, audio) is { } error) log.LogWarning("rule {Id}: {Error}", r.Id, error);
+                var cfgNow = config.Get();
+                if (r.WhileActive && cfgNow.Shortcuts.FirstOrDefault(s => s.Id == r.Shortcut) is { } target
+                    && (target.Toggle || target.Cmd == "builtin:mute") && Shortcuts.State(target, push, audio) == true)
+                    break;
+                if (Shortcuts.Run(cfgNow, r.Shortcut, log, push, audio) is { } error) log.LogWarning("rule {Id}: {Error}", r.Id, error);
                 break;
         }
     }
@@ -170,9 +174,19 @@ public sealed class RuleEngine(ConfigStore config, PushStore push, SessionMonito
     {
         if (r.Then == "goto") push.Emit("back", JsonSerializer.SerializeToElement(new { rule = r.Id }));
         else if (r.Then == "push" && !string.IsNullOrWhiteSpace(r.Key)) push.Remove(r.Key);
-        else if (r.Then == "shortcut" && config.Get().Shortcuts.FirstOrDefault(s => s.Id == r.Shortcut) is { Toggle: true } sc
-                 && Shortcuts.State(sc, push, audio) != false)
-            Shortcuts.Run(config.Get(), sc.Id, log, push, audio); // a toggle switches back off
+        else if (r.Then == "shortcut")
+        {
+            // one settings snapshot for the lookup and the run: a save in between must not run another shortcut
+            var cfgNow = config.Get();
+            if (cfgNow.Shortcuts.FirstOrDefault(s => s.Id == r.Shortcut) is not { } sc
+                || !(sc.Toggle || sc.Cmd == "builtin:mute") || Shortcuts.State(sc, push, audio) == false) return;
+            // another "while active" rule still holds the same toggle on (Do skipped it because it was on already):
+            // only the last one to end switches it off
+            if (_states.Values.Any(o => !ReferenceEquals(o.Rule, r) && o.Active && o.Rule.WhileActive
+                    && o.Rule.Then == "shortcut" && o.Rule.Shortcut == r.Shortcut)) return;
+            if (Shortcuts.Run(cfgNow, sc.Id, log, push, audio) is { } error) // a toggle switches back off
+                log.LogWarning("rule {Id}: could not switch {Shortcut} back off: {Error}", r.Id, sc.Id, error);
+        }
     }
 
     private (bool Holds, string Detail) Check(RuleConfig r)
@@ -251,9 +265,10 @@ public sealed class RuleEngine(ConfigStore config, PushStore push, SessionMonito
             }
             case "review-requested":
             {
-                var reviews = github.Snapshot()?.ReviewRequests ?? [];
-                var pr = reviews.FirstOrDefault(p => !p.Draft && (names.Length == 0 || names.Any(n => p.Repo.Contains(n, StringComparison.OrdinalIgnoreCase))));
-                return pr is null ? (false, "") : (true, reviews.Count > 1 ? $"{reviews.Count} reviews waiting" : $"{pr.Repo}#{pr.Number}");
+                var matching = (github.Snapshot()?.ReviewRequests ?? [])
+                    .Where(p => !p.Draft && (names.Length == 0 || names.Any(n => p.Repo.Contains(n, StringComparison.OrdinalIgnoreCase))))
+                    .ToList();
+                return matching.Count == 0 ? (false, "") : (true, matching.Count > 1 ? $"{matching.Count} reviews waiting" : $"{matching[0].Repo}#{matching[0].Number}");
             }
             case "ci-failed":
             {
@@ -280,6 +295,9 @@ public sealed class RuleEngine(ConfigStore config, PushStore push, SessionMonito
                 return (true, "");
             case "push":
             {
+                if (r.Op == "stale")
+                    return match.Length == 0 ? (false, "")
+                        : Stale(match, push.Get(match), r.Arg, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), StartedAtMs);
                 if (match.Length == 0 || !push.Snapshot().TryGetValue(match, out var item)) return (false, "");
                 var d = item.Data;
                 if (!string.IsNullOrEmpty(r.Op) && r.Op != "on") return Compare(d, r.Op, r.Arg) ? (true, Text(d)) : (false, "");
@@ -302,7 +320,36 @@ public sealed class RuleEngine(ConfigStore config, PushStore push, SessionMonito
 
     private static string Text(JsonElement d) => d.ValueKind == JsonValueKind.String ? d.GetString()! : d.ToString();
 
-    /// <summary>Compares a pushed value: above / below a number, or equals / differs from a text (case-insensitive).</summary>
+    /// <summary>When the agent started (unix ms); the tests move it back to skip the start-up grace.</summary>
+    internal long StartedAtMs { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    /// <summary>
+    /// "Has not been updated for N seconds": holds when the value is older than that, or when it is not there at all
+    /// (never pushed, deleted, or expired by its ttl). The time counts from the agent's start at the earliest, so a
+    /// value kept from before a restart, or one whose sender has not had the chance to post yet, is not stale at once.
+    /// </summary>
+    internal static (bool Holds, string Detail) Stale(string key, PushItem? item, string? arg, long nowMs, long startedAtMs)
+    {
+        // a Match that cannot be a push key (a typo, a pasted URL with a token) never holds, so it never reaches the
+        // log or the notification text through {detail}
+        if (!PushStore.ValidKey(key)) return (false, "");
+        if (!double.TryParse(arg, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sec)
+            || !double.IsFinite(sec) || sec <= 0)
+            return (false, "");
+        var since = Math.Max(item?.At ?? 0, startedAtMs);
+        if (nowMs - since < sec * 1000) return (false, "");
+        return (true, item is null ? $"{key}: no value" : $"{key}: no update for {Age(nowMs - item.At)}");
+    }
+
+    private static string Age(long ms) => ms switch
+    {
+        < 120_000 => $"{Math.Max(0, ms / 1000)} s",
+        < 2 * 3_600_000 => $"{ms / 60_000} min",
+        < 2 * 86_400_000L => $"{ms / 3_600_000} h",
+        _ => $"{ms / 86_400_000L} days",
+    };
+
+    /// <summary>Compares a pushed value: above / at least / below / at most a number, or equals / differs from a text (case-insensitive).</summary>
     public static bool Compare(JsonElement d, string op, string? arg)
     {
         var text = d.ValueKind == JsonValueKind.Object && d.TryGetProperty("value", out var inner) ? inner : d;
@@ -313,7 +360,9 @@ public sealed class RuleEngine(ConfigStore config, PushStore push, SessionMonito
         return op switch
         {
             ">" => num is not null && argNum is not null && num > argNum,
+            ">=" => num is not null && argNum is not null && num >= argNum,
             "<" => num is not null && argNum is not null && num < argNum,
+            "<=" => num is not null && argNum is not null && num <= argNum,
             "=" => num is not null && argNum is not null ? num == argNum : string.Equals(str, arg ?? "", StringComparison.OrdinalIgnoreCase),
             "!=" => num is not null && argNum is not null ? num != argNum : !string.Equals(str, arg ?? "", StringComparison.OrdinalIgnoreCase),
             _ => false,

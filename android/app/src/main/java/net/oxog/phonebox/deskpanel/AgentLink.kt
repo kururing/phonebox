@@ -24,7 +24,9 @@ import javax.net.ssl.X509TrustManager
 /**
  * Connection to the PhoneBox agent on the PC.
  *
- * 1. USB: http://127.0.0.1:8765, tunnelled by "adb reverse" while the cable is plugged in.
+ * 1. USB: https://127.0.0.1:8765, tunnelled by "adb reverse" while the cable is plugged in. Every app on the phone can
+ *    reach that address, so the TLS certificate is pinned (the agent writes the pin over adb) and each request carries
+ *    this app's own key ([UsbKey]), which the agent reads over adb.
  * 2. Wi-Fi / Tailscale: https://<pc-address>:<port>. The address list, a token and the SHA-256 fingerprint of the
  *    agent's self-signed certificate are fetched over USB ("pairing") and stored. Only that exact certificate is
  *    trusted (pinning), and every request carries the token.
@@ -32,7 +34,7 @@ import javax.net.ssl.X509TrustManager
  * The phone remembers every computer it was paired with; one is active over Wi-Fi (the one last plugged in, or the one
  * picked in the panel's page overview). A USB cable always wins: the plugged-in computer is used and becomes active.
  */
-class AgentLink(context: Context) {
+class AgentLink(private val context: Context) {
 
     class Reply(val code: Int, val contentType: String?, val body: InputStream)
 
@@ -44,7 +46,7 @@ class AgentLink(context: Context) {
     private val prefs = context.getSharedPreferences("pairing", Context.MODE_PRIVATE)
 
     /** A computer this phone is paired with; the certificate fingerprint is its id. */
-    private class Pc(val id: String, val name: String, val hosts: List<String>, val port: Int, val token: String) {
+    internal class Pc(val id: String, val name: String, val hosts: List<String>, val port: Int, val token: String) {
         fun json(): JSONObject = JSONObject().put("id", id).put("name", name).put("hosts", JSONArray(hosts)).put("port", port).put("token", token)
         companion object {
             fun from(j: JSONObject) = Pc(j.getString("id"), j.optString("name"),
@@ -83,7 +85,8 @@ class AgentLink(context: Context) {
         prefs.edit().putString("pcs", JSONArray().apply { list.forEach { put(it.json()) } }.toString()).putString("active", active).apply()
     }
 
-    private fun activePc(): Pc? = pcs.firstOrNull { it.id == activeId } ?: pcs.firstOrNull()
+    internal fun activePc(): Pc? = pcs.firstOrNull { it.id == activeId } ?: pcs.firstOrNull()
+    internal fun getPinnedFactory(pin: String): SSLSocketFactory = pinnedFactory(pin)
 
     /** The paired computers for the panel: [{"id", "name", "active"}]. */
     fun pcsJson(): String {
@@ -97,12 +100,14 @@ class AgentLink(context: Context) {
         savePcs(pcs, id)
         factory = null
         preferredHost = 0
+        trackpadSocket.close()
         return true
     }
 
     fun forget(id: String) = synchronized(pcsLock) {
         val rest = pcs.filter { it.id != id }
         savePcs(rest, if (activeId == id) rest.firstOrNull()?.id else activeId)
+        trackpadSocket.close()
     }
     private val appVersion = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
     // Identifies this phone to the agent (several phones can show different pages): a short hash of the app-scoped
@@ -120,6 +125,7 @@ class AgentLink(context: Context) {
     @Volatile private var lastPair = 0L
     @Volatile private var preferredHost = 0
     @Volatile private var factory: Pair<String, SSLSocketFactory>? = null
+    @Volatile private var usbFactory: Pair<String, SSLSocketFactory>? = null // its own: the USB agent's pin may differ from the Wi-Fi PC's
 
     /** Opens a long-lived GET (the live stream) over the best route; null when the PC is unreachable. */
     fun stream(path: String): Pair<Route, Reply>? {
@@ -129,13 +135,15 @@ class AgentLink(context: Context) {
     }
 
     /** Forwards a request (method + path with query) to the agent over the best available route. */
-    fun request(method: String, pathAndQuery: String): Reply {
-        usb(method, pathAndQuery)?.let {
+    fun request(method: String, pathAndQuery: String): Reply = request(method, pathAndQuery, null, null)
+
+    fun request(method: String, pathAndQuery: String, body: ByteArray?, contentType: String?): Reply {
+        usb(method, pathAndQuery, 4000, body, contentType)?.let {
             route = Route.USB
             maybePair()
             return it
         }
-        wifi(method, pathAndQuery)?.let {
+        wifi(method, pathAndQuery, 4000, body, contentType)?.let {
             route = Route.WIFI
             return it
         }
@@ -143,15 +151,99 @@ class AgentLink(context: Context) {
         return Reply(503, "application/json", ByteArrayInputStream("""{"error":"offline"}""".toByteArray()))
     }
 
-    private fun usb(method: String, pathAndQuery: String, readTimeout: Int = 4000): Reply? = try {
-        val c = URL("$USB_BASE$pathAndQuery").openConnection() as HttpURLConnection
+    val trackpadSocket = TrackpadSocket(this)
+
+    private class TrackpadEvent(val type: String, var dx: Float, var dy: Float, var delta: Float)
+    private var inFlight = false
+    private val pendingEvents = java.util.ArrayDeque<TrackpadEvent>()
+    private val httpTrackpadLock = Any()
+
+    fun sendTrackpad(type: String, dx: Float, dy: Float, delta: Float) {
+        if (route == Route.USB || !trackpadSocket.send(type, dx, dy, delta)) {
+            coalesceHttpTrackpad(type, dx, dy, delta)
+        }
+    }
+
+    private fun coalesceHttpTrackpad(type: String, dx: Float, dy: Float, delta: Float) {
+        synchronized(httpTrackpadLock) {
+            if (inFlight) {
+                val last = pendingEvents.peekLast()
+                if (last != null && last.type == type && (type == "move" || type == "scroll")) {
+                    last.dx += dx
+                    last.dy += dy
+                    last.delta += delta
+                } else {
+                    pendingEvents.addLast(TrackpadEvent(type, dx, dy, delta))
+                }
+                return
+            }
+            inFlight = true
+        }
+        dispatchHttpTrackpad(type, dx, dy, delta)
+    }
+
+    private fun dispatchHttpTrackpad(type: String, dx: Float, dy: Float, delta: Float) {
+        background.execute {
+            try {
+                val json = """{"type":"$type","dx":$dx,"dy":$dy,"delta":$delta}""".toByteArray(Charsets.UTF_8)
+                val reply = request("POST", "/api/trackpad", body = json, contentType = "application/json")
+                try { reply.body.close() } catch (_: Exception) {}
+            } finally {
+                var nextType = ""
+                var nextDx = 0f
+                var nextDy = 0f
+                var nextDelta = 0f
+                var hasNext = false
+                synchronized(httpTrackpadLock) {
+                    val next = pendingEvents.pollFirst()
+                    if (next != null) {
+                        nextType = next.type
+                        nextDx = next.dx
+                        nextDy = next.dy
+                        nextDelta = next.delta
+                        hasNext = true
+                    } else {
+                        inFlight = false
+                    }
+                }
+                if (hasNext) {
+                    dispatchHttpTrackpad(nextType, nextDx, nextDy, nextDelta)
+                }
+            }
+        }
+    }
+
+    private fun usb(method: String, pathAndQuery: String, readTimeout: Int = 4000): Reply? =
+        usb(method, pathAndQuery, readTimeout, null, null)
+
+    private fun usb(method: String, pathAndQuery: String, readTimeout: Int, body: ByteArray?, contentType: String?): Reply? = try {
+        val c = usbConnection(pathAndQuery)
         c.connectTimeout = 400 // refused instantly when no adb reverse tunnel exists
-        send(c, method, readTimeout)
+        val r = send(c, method, readTimeout, body, contentType)
+        if (r.code == 401) {
+            // the agent doesn't know this app's key yet (it reads it over adb within seconds): nothing ran, try Wi-Fi
+            try { r.body.close() } catch (_: Exception) {}
+            null
+        } else r
     } catch (e: Exception) {
         null
     }
 
-    private fun wifi(method: String, pathAndQuery: String, readTimeout: Int = 4000): Reply? {
+    /** A USB request: TLS pinned to the agent's certificate, then the key. Without a pin yet, USB is not used at all. */
+    private fun usbConnection(pathAndQuery: String): HttpURLConnection {
+        val pin = UsbKey.pin(context) ?: throw java.io.IOException("no USB pin yet")
+        val f = usbFactory?.takeIf { it.first == pin }?.second ?: pinnedFactory(pin).also { usbFactory = pin to it }
+        return (URL("$USB_BASE$pathAndQuery").openConnection() as HttpsURLConnection).apply {
+            sslSocketFactory = f
+            hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true } // identity is the pinned certificate
+            setRequestProperty("Authorization", "Bearer ${UsbKey.get(context)}")
+        }
+    }
+
+    private fun wifi(method: String, pathAndQuery: String, readTimeout: Int = 4000): Reply? =
+        wifi(method, pathAndQuery, readTimeout, null, null)
+
+    private fun wifi(method: String, pathAndQuery: String, readTimeout: Int, body: ByteArray?, contentType: String?): Reply? {
         val pc = activePc() ?: return null
         val hosts = pc.hosts
         val token = pc.token
@@ -169,7 +261,7 @@ class AgentLink(context: Context) {
                 c.hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true } // identity is the pinned certificate
                 c.connectTimeout = 1500
                 c.setRequestProperty("Authorization", "Bearer $token")
-                val r = send(c, method, readTimeout)
+                val r = send(c, method, readTimeout, body, contentType)
                 preferredHost = i
                 return r
             } catch (e: Exception) {
@@ -179,9 +271,13 @@ class AgentLink(context: Context) {
         return null
     }
 
-    private fun send(c: HttpURLConnection, method: String, readTimeout: Int = 4000): Reply {
+    private fun send(c: HttpURLConnection, method: String, readTimeout: Int = 4000): Reply =
+        send(c, method, readTimeout, null, null)
+
+    private fun send(c: HttpURLConnection, method: String, readTimeout: Int, body: ByteArray?, contentType: String?): Reply {
         // every POST acts on the computer (a container restart, a Home Assistant switch, a macro): none may run twice
         val controlPost = method == "POST"
+        c.instanceFollowRedirects = false
         c.requestMethod = method
         c.setRequestProperty("X-PhoneBox-App", appVersion) // lets the agent offer updates
         c.setRequestProperty("X-PhoneBox-Device", deviceId)
@@ -192,7 +288,13 @@ class AgentLink(context: Context) {
         c.useCaches = false
         if (method == "POST") {
             c.doOutput = true
-            c.setFixedLengthStreamingMode(0)
+            if (body != null) {
+                if (contentType != null) c.setRequestProperty("Content-Type", contentType)
+                c.setFixedLengthStreamingMode(body.size)
+                c.outputStream.write(body)
+            } else {
+                c.setFixedLengthStreamingMode(0)
+            }
             c.outputStream.close()
         }
         val code = try { c.responseCode } catch (e: java.io.IOException) {
@@ -200,6 +302,11 @@ class AgentLink(context: Context) {
             // The command body was already submitted. Trying the Wi-Fi route now could run a macro or toggle twice.
             c.disconnect()
             return Reply(504, "application/json", ByteArrayInputStream("""{"ok":false,"error":"The command result is unknown; check the computer before retrying"}""".toByteArray()))
+        }
+        if (code !in 100..599 || code in 300..399) {
+            try { (if (code >= 400) c.errorStream else c.inputStream)?.close() } catch (_: Exception) {}
+            c.disconnect()
+            return Reply(502, "application/json", ByteArrayInputStream("""{"error":"unexpected response"}""".toByteArray()))
         }
         val body = (if (code >= 400) c.errorStream else c.inputStream) ?: ByteArrayInputStream(ByteArray(0))
         return Reply(code, c.contentType, body)
@@ -210,31 +317,83 @@ class AgentLink(context: Context) {
         val now = System.currentTimeMillis()
         if (now - lastPair < 60_000) return
         lastPair = now
-        background.execute {
-            try {
-                val c = URL("$USB_BASE/api/pair").openConnection() as HttpURLConnection
-                c.connectTimeout = 800
-                c.readTimeout = 3000
-                val j = JSONObject(c.inputStream.bufferedReader().readText())
-                val name = j.optString("pc")
-                if (j.optBoolean("enabled")) {
-                    // add or refresh this computer and make it the active one
-                    val hosts = j.getJSONArray("hosts")
-                    val pc = Pc(j.getString("fingerprint"), name, (0 until hosts.length()).map { hosts.getString(it) }, j.getInt("port"), j.getString("token"))
-                    synchronized(pcsLock) { savePcs(pcs.filter { it.id != pc.id && !(name.isNotEmpty() && it.name == name) } + pc, pc.id) }
-                } else if (name.isNotEmpty()) {
-                    // Wi-Fi was turned off on this computer: forget its pairing, keep the others
-                    synchronized(pcsLock) {
-                        val rest = pcs.filter { it.name != name }
-                        if (rest.size != pcs.size) savePcs(rest, rest.firstOrNull { it.id == activeId }?.id ?: rest.firstOrNull()?.id)
-                    }
+        try {
+            background.execute {
+                try {
+                    refreshPairing(usbConnection("/api/pair"))
+                } catch (_: Exception) {
                 }
-            } catch (_: Exception) {
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+        }
+    }
+
+    private fun refreshPairing(c: HttpURLConnection) {
+        // released on every way out, a header read that throws included
+        try { readPairing(c) } finally { c.disconnect() }
+    }
+
+    private fun readPairing(c: HttpURLConnection) {
+        c.instanceFollowRedirects = false
+        c.connectTimeout = 800
+        c.readTimeout = 3000
+        val code = c.responseCode
+        if (code != 200) {
+            // a redirect or error body is not the agent's pairing answer: it must not add or forget a computer
+            try { (if (code >= 400) c.errorStream else c.inputStream)?.close() } catch (_: Exception) {}
+            return
+        }
+        val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+        val name = j.optString("pc")
+        if (j.optBoolean("enabled")) {
+            // add or refresh this computer and make it the active one
+            val hosts = j.getJSONArray("hosts")
+            val pc = Pc(j.getString("fingerprint"), name, (0 until hosts.length()).map { hosts.getString(it) }, j.getInt("port"), j.getString("token"))
+            synchronized(pcsLock) { if (!closed) savePcs(pcs.filter { it.id != pc.id && !(name.isNotEmpty() && it.name == name) } + pc, pc.id) }
+        } else if (name.isNotEmpty()) {
+            // Wi-Fi was turned off on this computer: forget its pairing, keep the others
+            synchronized(pcsLock) {
+                val rest = pcs.filter { it.name != name }
+                if (!closed && rest.size != pcs.size) savePcs(rest, rest.firstOrNull { it.id == activeId }?.id ?: rest.firstOrNull()?.id)
             }
         }
     }
 
+    /**
+     * Set by [close] under [pcsLock]. shutdownNow() does not wait for a refresh already running; one that reaches the
+     * lock after close() must not save this instance's list over a newer instance's change (e.g. a forgotten computer).
+     */
+    private var closed = false
+
+    fun close() {
+        synchronized(pcsLock) { closed = true }
+        trackpadSocket.close()
+        background.shutdownNow()
+    }
+
     fun pairedPc(): String? = activePc()?.name
+
+    /** Why a pairing failed, so the shell can say it in the phone's language instead of English inside a dialog. */
+    sealed class PairFailure {
+        /** No address answered: not the same network, or the firewall blocked PhoneBox. */
+        data class Unreachable(val pc: String, val hosts: List<String>) : PairFailure()
+
+        /** The agent refused the one-time code (it works once, for five minutes). */
+        data class CodeRejected(val pc: String) : PairFailure()
+
+        /** The agent answered, but with an HTTP status the pairing flow does not know. */
+        data class BadAnswer(val pc: String, val code: Int) : PairFailure()
+
+        /** The certificate is not the one in the QR code, so this is not the computer the user confirmed. */
+        data class WrongCertificate(val pc: String) : PairFailure()
+
+        fun message(context: Context): String = when (this) {
+            is Unreachable -> context.getString(R.string.pair_failed_unreachable, pc, hosts.joinToString())
+            is CodeRejected -> context.getString(R.string.pair_failed_code, pc)
+            is BadAnswer -> context.getString(R.string.pair_failed_answer, pc, code)
+            is WrongCertificate -> context.getString(R.string.pair_failed_certificate)
+        }
+    }
 
     /**
      * Pairing without USB: the computer's settings page shows a QR code with this link, and the phone trades the
@@ -293,15 +452,16 @@ class AgentLink(context: Context) {
 
     /**
      * Trades the link's one-time code for the Wi-Fi key and makes that computer the active one. Blocks (network):
-     * call it off the main thread. Returns null when paired, otherwise a message for the user.
+     * call it off the main thread. Returns null when paired, otherwise why it failed, which the shell shows in the
+     * phone's language.
      */
-    fun claim(link: PairLink): String? {
+    fun claim(link: PairLink): PairFailure? {
         val pinned = pinnedFactory(link.fingerprint)
-        var problem = "Could not reach ${link.pc} at ${link.hosts.joinToString()}. The phone and the computer must be " +
-            "on the same network (or both on Tailscale), and the computer's firewall must allow PhoneBox."
+        var problem: PairFailure = PairFailure.Unreachable(link.pc, link.hosts)
         for (host in link.hosts) {
             try {
                 val c = URL("https://$host:${link.port}/api/pair/claim").openConnection() as HttpsURLConnection
+                c.instanceFollowRedirects = false
                 c.sslSocketFactory = pinned
                 c.hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true } // identity is the pinned certificate
                 c.connectTimeout = 3000
@@ -313,11 +473,11 @@ class AgentLink(context: Context) {
                 c.outputStream.use { it.write(JSONObject().put("code", link.code).toString().toByteArray()) }
                 when (c.responseCode) {
                     200 -> {}
-                    403 -> return "${link.pc} did not accept the code: it works once and for 5 minutes. Start pairing again on the computer."
-                    else -> { problem = "${link.pc} answered ${c.responseCode}."; continue }
+                    403 -> return PairFailure.CodeRejected(link.pc)
+                    else -> { problem = PairFailure.BadAnswer(link.pc, c.responseCode); continue }
                 }
                 val j = JSONObject(c.inputStream.bufferedReader().readText())
-                if (!j.optString("fingerprint").equals(link.fingerprint, ignoreCase = true)) return "${link.pc} sent a different certificate. Start pairing again."
+                if (!j.optString("fingerprint").equals(link.fingerprint, ignoreCase = true)) return PairFailure.WrongCertificate(link.pc)
                 val hosts = j.optJSONArray("hosts")?.let { a -> (0 until a.length()).map { a.getString(it) } }
                     ?.filter { PairLink.isLocalAddress(it) }?.takeIf { it.isNotEmpty() } ?: link.hosts
                 // the name the user confirmed; only an entry for this very certificate is replaced, never one that
@@ -330,7 +490,7 @@ class AgentLink(context: Context) {
                 }
                 return null
             } catch (e: javax.net.ssl.SSLException) {
-                problem = "The computer at $host has a different certificate than the QR code. Start pairing again."
+                problem = PairFailure.WrongCertificate(link.pc)
             } catch (e: Exception) {
                 // try the next address
             }
@@ -351,8 +511,174 @@ class AgentLink(context: Context) {
     }
 
     companion object {
-        private const val USB_BASE = "http://127.0.0.1:8765"
+        private const val USB_BASE = "https://127.0.0.1:8765"
         /** The agent sends "state" every second, so a silent connection for this long is dead. */
         private const val STREAM_READ_TIMEOUT = 8000
+    }
+}
+
+class TrackpadSocket(private val link: AgentLink) {
+    @Volatile private var socket: java.net.Socket? = null
+    @Volatile private var out: java.io.OutputStream? = null
+    @Volatile private var connecting = false
+    private val lock = Any()
+    private val random = java.util.Random()
+
+    fun send(type: String, dx: Float, dy: Float, delta: Float): Boolean {
+        synchronized(lock) {
+            val s = socket
+            val o = out
+            if (s != null && o != null && !s.isClosed) {
+                try {
+                    val json = """{"type":"$type","dx":$dx,"dy":$dy,"delta":$delta}"""
+                    val payload = json.toByteArray(Charsets.UTF_8)
+                    if (payload.size > 125) return false
+                    val mask = ByteArray(4).also { random.nextBytes(it) }
+                    val frame = ByteArray(6 + payload.size)
+                    frame[0] = 0x81.toByte()
+                    frame[1] = (0x80 or payload.size).toByte()
+                    frame[2] = mask[0]
+                    frame[3] = mask[1]
+                    frame[4] = mask[2]
+                    frame[5] = mask[3]
+                    for (i in payload.indices) {
+                        frame[6 + i] = (payload[i].toInt() xor mask[i % 4].toInt()).toByte()
+                    }
+                    o.write(frame)
+                    o.flush()
+                    return true
+                } catch (_: Exception) {
+                    close()
+                }
+            }
+        }
+        ensureConnected()
+        return false
+    }
+
+    @Volatile private var lastAttempt = 0L
+
+    fun ensureConnected() {
+        if (connecting || link.route == AgentLink.Route.USB) return
+        val now = System.currentTimeMillis()
+        if (now - lastAttempt < 3000L) return
+        val pc = link.activePc() ?: return
+        connecting = true
+        lastAttempt = now
+        Thread({
+            try {
+                connect(pc)
+            } finally {
+                connecting = false
+            }
+        }, "trackpad-ws").start()
+    }
+
+    private fun b64(b: ByteArray): String {
+        val t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        val sb = java.lang.StringBuilder()
+        var i = 0
+        while (i < b.size) {
+            val b0 = b[i++].toInt() and 0xFF
+            if (i < b.size) {
+                val b1 = b[i++].toInt() and 0xFF
+                if (i < b.size) {
+                    val b2 = b[i++].toInt() and 0xFF
+                    sb.append(t[b0 ushr 2])
+                    sb.append(t[((b0 and 3) shl 4) or (b1 ushr 4)])
+                    sb.append(t[((b1 and 0xF) shl 2) or (b2 ushr 6)])
+                    sb.append(t[b2 and 0x3F])
+                } else {
+                    sb.append(t[b0 ushr 2])
+                    sb.append(t[((b0 and 3) shl 4) or (b1 ushr 4)])
+                    sb.append(t[(b1 and 0xF) shl 2])
+                    sb.append('=')
+                }
+            } else {
+                sb.append(t[b0 ushr 2])
+                sb.append(t[(b0 and 3) shl 4])
+                sb.append("==")
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun connect(pc: AgentLink.Pc) {
+        val hosts = pc.hosts
+        val port = pc.port
+        val token = pc.token
+        val pin = pc.id
+        val f = link.getPinnedFactory(pin)
+
+        for (host in hosts) {
+            var raw: java.net.Socket? = null
+            try {
+                raw = f.createSocket()
+                raw.tcpNoDelay = true
+                raw.connect(java.net.InetSocketAddress(host, port), 2000)
+                val s = raw as javax.net.ssl.SSLSocket
+                s.soTimeout = 3000
+                s.startHandshake()
+
+                val nonce = ByteArray(16).also { random.nextBytes(it) }
+                val secKey = b64(nonce)
+                val sha = java.security.MessageDigest.getInstance("SHA-1").digest((secKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray(Charsets.US_ASCII))
+                val expectedAccept = b64(sha)
+
+                val writer = java.io.BufferedWriter(java.io.OutputStreamWriter(s.outputStream, Charsets.US_ASCII))
+                writer.write("GET /api/trackpad HTTP/1.1\r\n")
+                writer.write("Host: $host:$port\r\n")
+                writer.write("Upgrade: websocket\r\n")
+                writer.write("Connection: Upgrade\r\n")
+                writer.write("Sec-WebSocket-Key: $secKey\r\n")
+                writer.write("Sec-WebSocket-Version: 13\r\n")
+                writer.write("Authorization: Bearer $token\r\n\r\n")
+                writer.flush()
+
+                val reader = java.io.BufferedReader(java.io.InputStreamReader(s.inputStream, Charsets.US_ASCII))
+                val status = reader.readLine() ?: throw java.io.IOException("No status")
+                if (!status.contains("101")) throw java.io.IOException("Upgrade failed: $status")
+
+                var hasAccept = false
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (line.isEmpty()) break
+                    if (line.startsWith("Sec-WebSocket-Accept:", ignoreCase = true) && line.substringAfter(':').trim() == expectedAccept) {
+                        hasAccept = true
+                    }
+                }
+                if (!hasAccept) throw java.io.IOException("Sec-WebSocket-Accept mismatch")
+                s.soTimeout = 0
+
+                synchronized(lock) {
+                    if (link.activePc()?.id != pin) {
+                        try { s.close() } catch (_: Exception) {}
+                        return
+                    }
+                    socket = s
+                    out = s.outputStream
+                }
+                Thread({
+                    try {
+                        val input = s.inputStream
+                        val buf = ByteArray(64)
+                        while (input.read(buf) != -1) { /* ignore incoming websocket frames */ }
+                    } catch (_: Exception) {}
+                    close(s)
+                }, "trackpad-ws-in").start()
+                return
+            } catch (_: Exception) {
+                try { raw?.close() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    fun close(target: java.net.Socket? = null) {
+        val s = socket
+        if (target == null || s === target) {
+            socket = null
+            out = null
+            try { s?.close() } catch (_: Exception) {}
+        }
     }
 }

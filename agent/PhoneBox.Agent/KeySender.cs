@@ -11,6 +11,18 @@ namespace PhoneBox.Agent;
 /// </summary>
 public static class KeySender
 {
+    /// <summary>
+    /// What to do when macOS refuses to send keys. Fixed text, so the phone may show it as it is. An entry granted to an
+    /// older, differently signed build (ad hoc before 0.9.22) stays in the list, even switched on, but no longer applies:
+    /// only removing it and adding the agent again helps (#269).
+    /// </summary>
+    internal const string AccessibilityHint =
+        "macOS refused: allow PhoneBoxAgent in System Settings › Privacy & Security › Accessibility. " +
+        "If it is already listed, remove it there with − and add it again";
+
+    internal record struct MouseCall(string Action, int Dx, int Dy, int Delta);
+    internal static Action<MouseCall>? TestMouseSink;
+
     private static readonly string[] Modifiers = ["ctrl", "shift", "alt", "win"];
 
     /// <summary>Splits "Ctrl+Shift+M, Win+D" into combos of normalized key names; throws on unknown keys.</summary>
@@ -29,7 +41,7 @@ public static class KeySender
         return combos;
     }
 
-    private static string Normalize(string k) => k.ToLowerInvariant() switch
+    private static string Normalize(string k) => Numpad(k.ToLowerInvariant()) ?? k.ToLowerInvariant() switch
     {
         "control" or "ctl" => "ctrl",
         "cmd" or "command" or "super" or "meta" or "windows" or "⌘" => "win",
@@ -51,6 +63,29 @@ public static class KeySender
         var x => x,
     };
 
+    // The keypad, under the names other tools use: numpad3, num3, kp3, KP_3 (xdotool), numpad_3; numpadadd, kpplus,
+    // KP_Add... "numpad+" cannot be written, as + joins the keys of a combo (#270).
+    private static readonly string[] NumpadPrefixes = ["numpad_", "numpad", "num_", "num", "kp_", "kp"];
+
+    private static string? Numpad(string k)
+    {
+        var prefix = NumpadPrefixes.FirstOrDefault(k.StartsWith);
+        if (prefix is null) return null;
+        var rest = k[prefix.Length..];
+        var name = rest switch
+        {
+            [var d] when char.IsAsciiDigit(d) => rest,
+            "enter" or "return" => "enter",
+            "add" or "plus" => "add",
+            "subtract" or "sub" or "minus" => "subtract",
+            "multiply" or "mul" or "times" or "*" => "multiply",
+            "divide" or "div" or "slash" or "/" => "divide",
+            "decimal" or "dec" or "period" or "dot" or "." or "comma" or "separator" => "decimal",
+            _ => null,
+        };
+        return name is null ? null : "numpad" + name;
+    }
+
     private static bool IsKnown(string k) =>
         (k.Length == 1 && char.IsAsciiLetterOrDigit(k[0])) || Special.ContainsKey(k) || (k.Length is 2 or 3 && k[0] == 'f' && int.TryParse(k[1..], out var n) && n is >= 1 and <= 24);
 
@@ -66,7 +101,21 @@ public static class KeySender
         ["bracketleft"] = (0xDB, "bracketleft", 33), ["bracketright"] = (0xDD, "bracketright", 30),
         ["playpause"] = (0xB3, "XF86AudioPlay", -1), ["nexttrack"] = (0xB0, "XF86AudioNext", -1), ["prevtrack"] = (0xB1, "XF86AudioPrev", -1),
         ["mute"] = (0xAD, "XF86AudioMute", -1), ["volumeup"] = (0xAF, "XF86AudioRaiseVolume", -1), ["volumedown"] = (0xAE, "XF86AudioLowerVolume", -1),
+        // the keypad (#270): its own keys, not the number row, so a shortcut bound to Numpad3 (Discord, games) is matched
+        ["numpad0"] = (0x60, "KP_0", 82), ["numpad1"] = (0x61, "KP_1", 83), ["numpad2"] = (0x62, "KP_2", 84), ["numpad3"] = (0x63, "KP_3", 85),
+        ["numpad4"] = (0x64, "KP_4", 86), ["numpad5"] = (0x65, "KP_5", 87), ["numpad6"] = (0x66, "KP_6", 88), ["numpad7"] = (0x67, "KP_7", 89),
+        ["numpad8"] = (0x68, "KP_8", 91), ["numpad9"] = (0x69, "KP_9", 92),
+        ["numpadmultiply"] = (0x6A, "KP_Multiply", 67), ["numpadadd"] = (0x6B, "KP_Add", 69), ["numpadsubtract"] = (0x6D, "KP_Subtract", 78),
+        ["numpaddecimal"] = (0x6E, "KP_Decimal", 65), ["numpaddivide"] = (0x6F, "KP_Divide", 75),
+        // Windows has no key code of its own for the keypad's Enter: it is VK_RETURN with the extended flag (WinExtended)
+        ["numpadenter"] = (0x0D, "KP_Enter", 76),
     };
+
+    /// <summary>
+    /// Keys that Windows tells apart from another key only by the "extended" flag: the keypad's Enter (VK_RETURN, like the
+    /// main Enter) and its / (whose scan code is the main / key's).
+    /// </summary>
+    internal static bool WinExtended(string k) => k is "numpadenter" or "numpaddivide";
 
     public static void SendKeys(string spec)
     {
@@ -93,13 +142,20 @@ public static class KeySender
 #if WINDOWS
     private static void Send(List<string> combo) => SendCombo(combo);
 
+    /// <summary>
+    /// A mouse "move" of zero pixels: nothing on screen changes, but this process becomes the one that received the last
+    /// input, which Windows requires before it lets a process bring a window to the front.
+    /// </summary>
+    internal static bool NudgeInput() =>
+        SendInput(1, [new INPUT { type = 0 /* MOUSE */, u = new InputUnion { mi = new MOUSEINPUT { dwFlags = 1 /* MOVE, by 0 */ } } }], Marshal.SizeOf<INPUT>()) == 1;
+
     /// <summary>Presses one parsed combo; false when Windows took none or only part of the input.</summary>
     public static bool SendCombo(List<string> combo)
     {
-        var vks = combo.Select(WinVk).ToList();
+        var keys = combo.Select(k => (Vk: WinVk(k), Extended: WinExtended(k))).ToList();
         var inputs = new List<INPUT>();
-        foreach (var vk in vks) inputs.Add(Key(vk, false));
-        foreach (var vk in Enumerable.Reverse(vks)) inputs.Add(Key(vk, true));
+        foreach (var (vk, ext) in keys) inputs.Add(Key(vk, false, ext));
+        foreach (var (vk, ext) in Enumerable.Reverse(keys)) inputs.Add(Key(vk, true, ext));
         return SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf<INPUT>()) == inputs.Count;
     }
 
@@ -121,13 +177,13 @@ public static class KeySender
     // arrows, Home/End, Insert/Delete, PageUp/PageDown and the right-hand keys need the "extended" flag
     private static bool Extended(byte vk) => vk is >= 0x21 and <= 0x2E or 0x5B;
 
-    private static INPUT Key(byte vk, bool up)
+    private static INPUT Key(byte vk, bool up, bool forceExtended = false)
     {
         // the scan code too: raw-input apps tell keys apart (and left from right) by it, and 0 is no key at all.
         // MAPVK_VK_TO_VSC_EX marks the media keys with E0; the arrows and the Home/End block share their codes with
         // the keypad, so they still come from the list above.
         var sc = MapVirtualKeyW(vk, 4);
-        var extended = Extended(vk) || (sc >> 8) is 0xE0 or 0xE1;
+        var extended = forceExtended || Extended(vk) || (sc >> 8) is 0xE0 or 0xE1;
         return new()
         {
             type = 1,
@@ -147,6 +203,72 @@ public static class KeySender
     [StructLayout(LayoutKind.Explicit)] private struct InputUnion { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
     [StructLayout(LayoutKind.Sequential)] private struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public nint dwExtraInfo; }
     [StructLayout(LayoutKind.Sequential)] private struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public nint dwExtraInfo; }
+
+    private const uint INPUT_MOUSE = 0;
+    private const uint MOUSEEVENTF_MOVE = 0x0001;
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    private const uint MOUSEEVENTF_WHEEL = 0x0800;
+    private const uint MOUSEEVENTF_HWHEEL = 0x01000;
+
+    private static INPUT MouseInput(int dx, int dy, uint mouseData, uint flags) => new()
+    {
+        type = INPUT_MOUSE,
+        u = new InputUnion { mi = new MOUSEINPUT { dx = dx, dy = dy, mouseData = mouseData, dwFlags = flags } },
+    };
+
+    public static void MouseMove(int dx, int dy)
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("move", dx, dy, 0)); return; }
+        INPUT[] inputs = [MouseInput(dx, dy, 0, MOUSEEVENTF_MOVE)];
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void MouseClick()
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("click", 0, 0, 0)); return; }
+        INPUT[] inputs = [MouseInput(0, 0, 0, MOUSEEVENTF_LEFTDOWN), MouseInput(0, 0, 0, MOUSEEVENTF_LEFTUP)];
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void MouseRightClick()
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("rightClick", 0, 0, 0)); return; }
+        INPUT[] inputs = [MouseInput(0, 0, 0, MOUSEEVENTF_RIGHTDOWN), MouseInput(0, 0, 0, MOUSEEVENTF_RIGHTUP)];
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void MouseScroll(int delta)
+    {
+        if (delta == 0) return;
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("scroll", 0, 0, delta)); return; }
+        INPUT[] inputs = [MouseInput(0, 0, (uint)delta, MOUSEEVENTF_WHEEL)];
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void MouseHorizontalScroll(int delta)
+    {
+        if (delta == 0) return;
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("hscroll", 0, 0, delta)); return; }
+        INPUT[] inputs = [MouseInput(0, 0, (uint)delta, MOUSEEVENTF_HWHEEL)];
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void MouseDown()
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("mouseDown", 0, 0, 0)); return; }
+        INPUT[] inputs = [MouseInput(0, 0, 0, MOUSEEVENTF_LEFTDOWN)];
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void MouseUp()
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("mouseUp", 0, 0, 0)); return; }
+        INPUT[] inputs = [MouseInput(0, 0, 0, MOUSEEVENTF_LEFTUP)];
+        SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
 #else
     /// <summary>Presses one parsed combo; false when xdotool or wtype failed (macOS throws when it refuses).</summary>
     public static bool SendCombo(List<string> combo) => Send(combo);
@@ -198,7 +320,7 @@ public static class KeySender
         if (OperatingSystem.IsMacOS())
         {
             if (!Run("osascript", "-e", $"tell application \"System Events\" to keystroke \"{text.Replace("\\", "\\\\").Replace("\"", "\\\"")}\""))
-                throw new InvalidOperationException("macOS refused: allow PhoneBoxAgent in System Settings › Privacy & Security › Accessibility");
+                throw new InvalidOperationException(AccessibilityHint);
             return true;
         }
         if (Sh.Which("xdotool") is not null && Environment.GetEnvironmentVariable("WAYLAND_DISPLAY") is null) return Run("xdotool", "type", "--delay", "8", "--", text);
@@ -235,7 +357,127 @@ public static class KeySender
     private static void Osa(string script)
     {
         if (Sh.RunWithTimeout(5000, "osascript", "-e", script) is null)
-            throw new InvalidOperationException("macOS refused: allow PhoneBoxAgent in System Settings › Privacy & Security › Accessibility");
+            throw new InvalidOperationException(AccessibilityHint);
+    }
+
+    private static readonly object UnixMoveLock = new();
+    private static readonly object UnixSendLock = new();
+    private static int _unixPendingDx;
+    private static int _unixPendingDy;
+    private static bool _unixMoveScheduled;
+
+    private static void FlushUnixMove()
+    {
+        int dx, dy;
+        lock (UnixMoveLock)
+        {
+            dx = _unixPendingDx;
+            dy = _unixPendingDy;
+            _unixPendingDx = 0;
+            _unixPendingDy = 0;
+        }
+        if (dx != 0 || dy != 0)
+            UnixMouse("mousemove_relative", "--", dx.ToString(System.Globalization.CultureInfo.InvariantCulture), dy.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static void UnixAction(params string[] args)
+    {
+        lock (UnixSendLock)
+        {
+            FlushUnixMove();
+            UnixMouse(args);
+        }
+    }
+
+    private static void UnixMouse(params string[] args)
+    {
+        if (OperatingSystem.IsMacOS())
+            throw new PlatformNotSupportedException("The Trackpad widget is not supported on macOS yet.");
+        var xdotool = Sh.Which("xdotool");
+        if (xdotool is null)
+            throw new InvalidOperationException("controlling the mouse needs xdotool (X11)");
+        var psi = new System.Diagnostics.ProcessStartInfo(xdotool);
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        try
+        {
+            ToolProcess.RunAsync(psi, TimeSpan.FromSeconds(2), CancellationToken.None).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("xdotool failed: " + ex.Message, ex);
+        }
+    }
+
+    public static void MouseMove(int dx, int dy)
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("move", dx, dy, 0)); return; }
+        lock (UnixMoveLock)
+        {
+            _unixPendingDx += dx;
+            _unixPendingDy += dy;
+            if (_unixMoveScheduled) return;
+            _unixMoveScheduled = true;
+        }
+        Task.Run(async () =>
+        {
+            await Task.Delay(16);
+            lock (UnixSendLock)
+            {
+                lock (UnixMoveLock) { _unixMoveScheduled = false; }
+                FlushUnixMove();
+            }
+        });
+    }
+
+    public static void MouseClick()
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("click", 0, 0, 0)); return; }
+        UnixAction("click", "1");
+    }
+
+    public static void MouseRightClick()
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("rightClick", 0, 0, 0)); return; }
+        UnixAction("click", "3");
+    }
+
+    private static int _unixVScrollAcc;
+    private static int _unixHScrollAcc;
+
+    public static void MouseScroll(int delta)
+    {
+        if (delta == 0) return;
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("scroll", 0, 0, delta)); return; }
+        _unixVScrollAcc += delta;
+        var n = Math.Abs(_unixVScrollAcc) / 120;
+        if (n == 0) return;
+        var dir = _unixVScrollAcc > 0 ? "4" : "5";
+        _unixVScrollAcc -= Math.Sign(_unixVScrollAcc) * n * 120;
+        UnixAction("click", "--repeat", n.ToString(System.Globalization.CultureInfo.InvariantCulture), dir);
+    }
+
+    public static void MouseHorizontalScroll(int delta)
+    {
+        if (delta == 0) return;
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("hscroll", 0, 0, delta)); return; }
+        _unixHScrollAcc += delta;
+        var n = Math.Abs(_unixHScrollAcc) / 120;
+        if (n == 0) return;
+        var dir = _unixHScrollAcc > 0 ? "7" : "6";
+        _unixHScrollAcc -= Math.Sign(_unixHScrollAcc) * n * 120;
+        UnixAction("click", "--repeat", n.ToString(System.Globalization.CultureInfo.InvariantCulture), dir);
+    }
+
+    public static void MouseDown()
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("mouseDown", 0, 0, 0)); return; }
+        UnixAction("mousedown", "1");
+    }
+
+    public static void MouseUp()
+    {
+        if (TestMouseSink is not null) { TestMouseSink(new MouseCall("mouseUp", 0, 0, 0)); return; }
+        UnixAction("mouseup", "1");
     }
 #endif
 }

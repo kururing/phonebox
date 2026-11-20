@@ -1,4 +1,4 @@
-import { $, D, DEFAULT_CFG, LOCALE, cfg, fmtDur, fmtHM, h, t, tick } from '../main.js';
+import { $, D, DEFAULT_CFG, LOCALE, cfg, fmtDur, fmtHM, h, en, t, tick } from '../main.js';
 import { W } from '../registry.js';
 import { cached, every } from './helpers.js';
 
@@ -8,7 +8,21 @@ export function moonPhase(date) {
   const age = ((((date - Date.UTC(2000, 0, 6, 18, 14)) / 864e5) % syn) + syn) % syn;
   const names = ['New moon', 'Waxing crescent', 'First quarter', 'Waxing gibbous', 'Full moon', 'Waning gibbous', 'Last quarter', 'Waning crescent'];
   const i = Math.floor(((age + syn / 16) % syn) / (syn / 8));
-  return { name: names[i], icon: '🌑🌒🌓🌔🌕🌖🌗🌘'.match(/./gu)[i], illum: (1 - Math.cos((2 * Math.PI * age) / syn)) / 2 };
+  return { name: names[i], age, illum: (1 - Math.cos((2 * Math.PI * age) / syn)) / 2 };
+}
+
+// The lit part of the moon in a 100 × 100 box (outer edge on the lit side, back along the terminator, an ellipse).
+export function moonLitPath({ age, illum }, r = 44) {
+  const syn = 29.530588853;
+  const rx = Math.abs(Math.cos((2 * Math.PI * age) / syn)) * r, waxing = age < syn / 2, gibbous = illum > 0.5;
+  return waxing ? `M50 ${50 - r} A${r} ${r} 0 0 1 50 ${50 + r} A${rx.toFixed(2)} ${r} 0 0 ${gibbous ? 1 : 0} 50 ${50 - r}Z`
+    : `M50 ${50 - r} A${r} ${r} 0 0 0 50 ${50 + r} A${rx.toFixed(2)} ${r} 0 0 ${gibbous ? 0 : 1} 50 ${50 - r}Z`;
+}
+// A small inline moon icon drawn to the phase, in the same line style as the other icons.
+function moonIcon(m) {
+  const t = document.createElement('template');
+  t.innerHTML = `<svg class="ico m" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="44" fill="none" stroke="currentColor" stroke-width="8"/><path d="${moonLitPath(m, 44)}" fill="currentColor"/></svg>`;
+  return t.content.firstElementChild;
 }
 
 W.sun = {
@@ -25,12 +39,24 @@ W.sun = {
     return {
       update() {
         const d = D.weather?.daily;
-        if (!d?.sunrise) { q('.sl').textContent = D.weather === null ? t('w.loading') : t('w.weatherUnavailable'); return; }
+        const rise = new Date(d?.sunrise?.[0] ?? NaN), set = new Date(d?.sunset?.[0] ?? NaN);
+        if (!(set > rise)) {
+          if (shown) {
+            shown = '';
+            fg.style.strokeDashoffset = len;
+            box.classList.remove('night');
+            for (const selector of ['.sr', '.ss', '.w-sub', '.moon']) q(selector).textContent = '';
+          }
+          sun.style.display = 'none';
+          q('.sl').textContent = D.weather === null ? t('w.loading') : t('w.weatherUnavailable');
+          return;
+        }
         const now = new Date();
-        const key = now.getHours() + ':' + now.getMinutes();
+        const key = [Math.floor(now.getTime() / 60_000), rise.getTime(), set.getTime(),
+          d.daylight_duration?.[0], d.uv_index_max?.[0]].join(':');
         if (key === shown) return;
         shown = key;
-        const rise = new Date(d.sunrise[0]), set = new Date(d.sunset[0]);
+        sun.style.display = '';
         const f = Math.max(0, Math.min(1, (now - rise) / (set - rise)));
         fg.style.strokeDashoffset = len * (1 - f);
         const pt = fg.getPointAtLength(len * f);
@@ -42,7 +68,7 @@ W.sun = {
         q('.sl').textContent = now < rise ? t('w.risesIn', { dur: fmtDur(rise - now) }) : now > set ? t('w.afterSunset') : t('w.lightLeft', { dur: fmtDur(set - now) });
         q('.w-sub').textContent = t('w.day') + ' ' + fmtDur((d.daylight_duration?.[0] ?? (set - rise) / 1000) * 1000) + (d.uv_index_max?.[0] != null ? ` · UV ${Math.round(d.uv_index_max[0])}` : '');
         const m = moonPhase(now);
-        q('.moon').textContent = `${m.icon} ${m.name} · ${Math.round(m.illum * 100)}%`;
+        q('.moon').replaceChildren(moonIcon(m), `${m.name} · ${Math.round(m.illum * 100)}%`);
       },
     };
   },
@@ -54,7 +80,7 @@ W.air = {
   create(box) {
     const city = h('span', 'w-sub');
     const v = h('div', 'aq-v', '—'), cat = h('div', 'aq-c', t('w.loading')), chips = h('div', 'aq-chips');
-    box.append(h('div', 'w-title', 'Air quality', city), h('div', 'aq-main', v, cat), chips);
+    box.append(h('div', 'w-title', en('Air quality'), city), h('div', 'aq-main', v, cat), chips);
     let coordinates, load;
     const clearIndex = (message) => {
       box.style.removeProperty('--c');
@@ -119,12 +145,7 @@ W.moon = {
         const syn = 29.530588853;
         const age = ((((now - Date.UTC(2000, 0, 6, 18, 14)) / 864e5) % syn) + syn) % syn;
         const m = moonPhase(now);
-        const r = 44, rx = Math.abs(Math.cos((2 * Math.PI * age) / syn)) * r;
-        const waxing = age < syn / 2, gibbous = m.illum > 0.5;
-        // outer edge on the lit side, back along the terminator (an ellipse)
-        const d = waxing ? `M50 6 A${r} ${r} 0 0 1 50 94 A${rx.toFixed(2)} ${r} 0 0 ${gibbous ? 1 : 0} 50 6Z`
-          : `M50 6 A${r} ${r} 0 0 0 50 94 A${rx.toFixed(2)} ${r} 0 0 ${gibbous ? 0 : 1} 50 6Z`;
-        q('.mo-lit').setAttribute('d', d);
+        q('.mo-lit').setAttribute('d', moonLitPath(m));
         q('.mo-name').textContent = m.name;
         q('.mo-ill').textContent = `${Math.round(m.illum * 100)}% lit`;
         const inDays = (target) => { const dd = ((target - age) % syn + syn) % syn; return dd < 0.5 ? 'tonight' : dd < 1.5 ? 'tomorrow' : `in ${Math.round(dd)} days`; };

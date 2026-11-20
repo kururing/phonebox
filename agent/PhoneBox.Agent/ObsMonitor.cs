@@ -17,7 +17,9 @@ public sealed record ObsSnapshot(bool Connected, string? Error, bool Streaming, 
 public sealed partial class ObsMonitor(ConfigStore config, ILogger<ObsMonitor> log) : BackgroundService
 {
     private volatile ObsSnapshot _snap = new(false, null, false, 0, false, false, 0, null, [], null, null);
-    private ClientWebSocket? _ws;
+    private volatile ClientWebSocket? _ws;
+    // Retiring a session and publishing a deck built on it are ordered by this lock (never held across an await).
+    private readonly Lock _sessionGate = new();
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonNode?>> _pending = new();
     private readonly SemaphoreSlim _send = new(1, 1);
 
@@ -30,7 +32,7 @@ public sealed partial class ObsMonitor(ConfigStore config, ILogger<ObsMonitor> l
         while (!ct.IsCancellationRequested)
         {
             var obs = config.Get().Obs;
-            if (!obs.Enabled) { _snap = _snap with { Connected = false, Error = null }; await Task.Delay(2000, ct); continue; }
+            if (!obs.Enabled) { _snap = _snap with { Connected = false, Error = null }; InvalidateDeck(); await Task.Delay(2000, ct); continue; }
             try
             {
                 await RunConnection(obs, ct);
@@ -92,10 +94,15 @@ public sealed partial class ObsMonitor(ConfigStore config, ILogger<ObsMonitor> l
         }
         finally
         {
-            _ws = null;
+            lock (_sessionGate)
+            {
+                _ws = null;
+                _snap = _snap with { Connected = false };
+                InvalidateDeck();
+            }
             stop.Cancel();
             try { await reader; } catch { }
-            foreach (var p in _pending.Values) p.TrySetResult(null);
+            foreach (var p in _pending.Values) p.TrySetException(new IOException("OBS disconnected"));
             _pending.Clear();
         }
     }
@@ -124,17 +131,29 @@ public sealed partial class ObsMonitor(ConfigStore config, ILogger<ObsMonitor> l
         _pending[id] = tcs;
         var d = new JsonObject { ["requestType"] = type, ["requestId"] = id };
         if (data is not null) d["requestData"] = data;
-        await SendRaw(ws, new JsonObject { ["op"] = 6, ["d"] = d }, ct);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(5));
-        await using var _ = timeout.Token.Register(() => { if (_pending.TryRemove(id, out var t)) t.TrySetException(new TimeoutException("OBS did not answer")); });
-        return await tcs.Task;
+        try
+        {
+            // Disconnect cleanup retires _ws before it fails the pending requests: one registered after that point
+            // would never be failed, so it stops here.
+            if (!ReferenceEquals(_ws, ws)) throw new Exception("OBS is not connected");
+            await SendRaw(ws, new JsonObject { ["op"] = 6, ["d"] = d }, ct);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            // The deadline completes this request itself, even when cleanup already dropped it from _pending; an
+            // answer that arrived first keeps its result.
+            await using var _ = timeout.Token.Register(() => tcs.TrySetException(new TimeoutException("OBS did not answer")));
+            return await tcs.Task;
+        }
+        finally
+        {
+            _pending.TryRemove(id, out _);
+        }
     }
 
     /// <summary>The OBS widget's buttons: record, pause, stream, scene, mic.</summary>
     public async Task<string?> ActAsync(string action, string? scene)
     {
-        if (!config.Get().Widgets().Any(w => (w.Type == "obs" || w.Type.StartsWith("obs-")) && w.Bool("control") == true))
+        if (!config.Get().Widgets(enabledPagesOnly: true).Any(w => (w.Type == "obs" || w.Type.StartsWith("obs-")) && w.Bool("control") == true))
             return "controlling OBS is turned off in the widget's settings";
         try
         {

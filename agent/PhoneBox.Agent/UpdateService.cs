@@ -23,6 +23,7 @@ public sealed class UpdateService(ConfigStore cfg, AdbReverse adb, IHostApplicat
     private static readonly string InstallDir = AppPaths.InstallDir;
     private static readonly string ExeName = OperatingSystem.IsWindows() ? "PhoneBoxAgent.exe" : "PhoneBoxAgent";
     private static readonly string Downloads = Path.Combine(AppPaths.LocalDir, "updates");
+    internal string DownloadsDir { get; init; } = Downloads;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(5) };
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -62,10 +63,13 @@ public sealed class UpdateService(ConfigStore cfg, AdbReverse adb, IHostApplicat
     [DllImport("libc")] private static extern IntPtr realpath(string path, IntPtr resolved);
     [DllImport("libc")] private static extern void free(IntPtr pointer);
 
+    /// <summary>A phone whose app update to the latest release failed has not had a successful retry yet.</summary>
+    private bool PhoneRetryPending => _latest?.Version is { } latest && _phoneRetryFor == latest && _phoneRetry.Length > 0;
+
     public UpdateStatus Status()
     {
         var latest = _latest?.Version;
-        var retry = latest is not null && _phoneRetryFor == latest && _phoneRetry.Length > 0;
+        var retry = PhoneRetryPending;
         return new UpdateStatus(AppPaths.Version, AppVersion, latest, _latest?.Url,
             latest is not null && Newer(latest, AppPaths.Version) && _latest!.AgentZip is not null,
             latest is not null && _latest!.Apk is not null && (AppVersion is not null && Newer(latest, AppVersion) || retry),
@@ -136,17 +140,28 @@ public sealed class UpdateService(ConfigStore cfg, AdbReverse adb, IHostApplicat
             // the agent was just replaced and is restarting: this (old) process still sees the update as pending,
             // and a second swap would trip over its own files
             if (_state == "restarting") return;
+            var attempted = false;
+            var failed = false;
             if (s.AppUpdate && adb.Connected)
             {
+                attempted = true;
                 // a phone that refuses the app must not keep the agent itself from updating
                 try { await UpdatePhoneAsync(ct); }
                 catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
                 {
+                    failed = true;
                     _error = ex.Message;
                     log.LogWarning("phone update failed: {Msg}", ex.Message);
                 }
             }
-            if (s.AgentUpdate && RunningInstalled) await UpdateAgentAsync(ct);
+            if (s.AgentUpdate && RunningInstalled)
+            {
+                attempted = true;
+                await UpdateAgentAsync(ct);
+            }
+            // A phone still waiting for its retry (unplugged during this round, so nothing was installed on it) keeps the
+            // reason its update failed: the update stays pending in Status and needs that explanation next to it.
+            if (attempted && !failed && !PhoneRetryPending) _error = null;
         }
         catch (Exception ex)
         {
@@ -176,13 +191,21 @@ public sealed class UpdateService(ConfigStore cfg, AdbReverse adb, IHostApplicat
             if (_latest?.Apk is null) return "could not find the phone app in the GitHub releases";
             var apk = await VerifiedDownloadAsync(_latest.Apk, $"PhoneBox-{_latest.Version}.apk", ct);
             var adbExe = AdbReverse.FindAdb(cfg.Get().AdbPath) ?? throw new InvalidOperationException("adb not found");
+            var failed = new List<string>();
             foreach (var serial in targets)
             {
-                var output = await Run(adbExe, ["-s", serial, "install", apk], ct);
-                if (!output.Contains("Success")) return $"installing on {serial} failed: {output.Trim().Split('\n').LastOrDefault()}";
-                log.LogInformation("phone app {Version} installed on {Serial}", _latest.Version, serial);
+                try
+                {
+                    var output = await Run(adbExe, ["-s", serial, "install", apk], ct);
+                    if (!output.Contains("Success")) failed.Add($"installing on {serial} failed: {output.Trim().Split('\n').LastOrDefault()}");
+                    else log.LogInformation("phone app {Version} installed on {Serial}", _latest.Version, serial);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+                {
+                    failed.Add($"installing on {serial} failed: {ex.Message}");
+                }
             }
-            return null;
+            return failed.Count > 0 ? string.Join("; ", failed) : null;
         }
         catch (Exception ex) { return ex.Message; }
         finally
@@ -230,14 +253,14 @@ public sealed class UpdateService(ConfigStore cfg, AdbReverse adb, IHostApplicat
         _phoneRetryFor = _latest.Version;
         // a phone that failed keeps the update pending (Status), whatever version the other phones report
         if (failed.Count > 0) throw new InvalidOperationException("phone update failed on " + string.Join("; ", failed.Select(f => $"{f.Serial}: {f.Why}")));
-        AppVersion = _latest.Version;
+        if (targets.Length > 0) AppVersion = _latest.Version;
     }
 
     private async Task UpdateAgentAsync(CancellationToken ct)
     {
         _state = "updating agent";
         var zip = await VerifiedDownloadAsync(_latest!.AgentZip!, $"PhoneBoxAgent-{_latest.Version}.zip", ct);
-        var staging = Path.Combine(Downloads, "agent-" + _latest.Version);
+        var staging = Path.Combine(DownloadsDir, "agent-" + _latest.Version);
         if (Directory.Exists(staging)) Directory.Delete(staging, true);
         ZipFile.ExtractToDirectory(zip, staging);
         if (!File.Exists(Path.Combine(staging, ExeName))) throw new InvalidOperationException($"the agent package has no {ExeName}");
@@ -268,8 +291,8 @@ public sealed class UpdateService(ConfigStore cfg, AdbReverse adb, IHostApplicat
 
     private async Task<string> DownloadAsync(string url, string name, CancellationToken ct)
     {
-        Directory.CreateDirectory(Downloads);
-        var path = Path.Combine(Downloads, name);
+        Directory.CreateDirectory(DownloadsDir);
+        var path = Path.Combine(DownloadsDir, name);
         if (File.Exists(path)) return path;
         var tmp = path + ".part";
         try { await DownloadToAsync(url, null, tmp, ct); }

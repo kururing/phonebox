@@ -63,6 +63,17 @@ if ($Autostart) {
     $lnk.Save()
 }
 
+Write-Host '==> Starting agent'
+# A failed start must not skip the phone app below, but it is still a failure: it is raised once that step ran.
+# A slow answer from a started agent is only a warning.
+$launchError = $null
+try { Start-Process $exe -WorkingDirectory $app } catch { $launchError = $_ }
+if (-not $launchError) {
+    Start-Sleep 2
+    try { Invoke-RestMethod http://127.0.0.1:8765/api/info -TimeoutSec 5 | Out-Null; Write-Host 'PhoneBox is running. Settings: http://127.0.0.1:8765  (or the tray icon)' }
+    catch { Write-Warning "The agent did not respond; see $env:LOCALAPPDATA\PhoneBox\agent.log" }
+}
+
 if ($Apk) {
     $adb = (Get-Command adb -ErrorAction SilentlyContinue).Source
     if (-not $adb) {
@@ -100,8 +111,5 @@ if ($Apk) {
     & $adb @target shell am start -n net.oxog.phonebox.deskpanel/.MainActivity | Out-Null
 }
 
-Write-Host '==> Starting agent'
-Start-Process $exe -WorkingDirectory $app
-Start-Sleep 2
-try { Invoke-RestMethod http://127.0.0.1:8765/api/info | Out-Null; Write-Host 'PhoneBox is running. Settings: http://127.0.0.1:8765  (or the tray icon)' }
-catch { Write-Warning "The agent did not respond; see $env:LOCALAPPDATA\PhoneBox\agent.log" }
+# the agent could not be started (see above): the phone step ran, the install still failed
+if ($launchError) { throw $launchError }

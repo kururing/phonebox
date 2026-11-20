@@ -3,9 +3,13 @@ const { test, expect } = require('@playwright/test');
 
 const MIN = 60_000;
 
+// Midday, not the real time: the widget counts today's sessions, so a run that started a few minutes before midnight
+// crossed into a new day while the tests fast-forward and lost its tomatoes.
+const NOON = new Date(2026, 0, 15, 12, 0, 0);
+
 async function show(page, options, state = null) {
-  await page.clock.install();
-  await page.goto('/panel/');
+  await page.clock.install({ time: NOON });
+  await page.goto('/panel/style.css');
   await page.evaluate(({ options, state }) => {
     localStorage.clear();
     localStorage.setItem('pb-demo-config', JSON.stringify({
@@ -14,7 +18,7 @@ async function show(page, options, state = null) {
     }));
     if (state) localStorage.setItem('pomo:p/pomo', JSON.stringify({ ...state, endsAt: state.endsAt && Date.now() + state.endsAt, day: new Date().toDateString() }));
   }, { options, state });
-  await page.reload();
+  await page.goto('/panel/');
   const w = page.locator('.w-pomodoro');
   await expect(w).toBeVisible();
   return {
@@ -27,13 +31,28 @@ async function show(page, options, state = null) {
   };
 }
 
+test('the icon-only buttons have names, and the start button follows the state', async ({ page }) => {
+  const p = await show(page, { focus: 1, break: 1 });
+  await expect(p.w.getByRole('button', { name: 'Restart', exact: true })).toBeVisible();
+  await expect(p.w.getByRole('button', { name: 'Skip to the next step' })).toBeVisible();
+  await expect(p.w.getByRole('button', { name: 'Start', exact: true })).toBeVisible();
+  await p.play();
+  await expect(p.w.getByRole('button', { name: 'Pause', exact: true })).toBeVisible();
+});
+
+test('Pomodoro fixture configuration survives delayed default initialization', async ({ page }) => {
+  const { gatedLayout } = require('./layout-ordering');
+  expect(await gatedLayout(page, p => show(p, { sequence: '25 focus, lunch' }))).toEqual(['p']);
+});
+
 test('without new options it alternates focus and break as before', async ({ page }) => {
   const p = await show(page, { focus: 1, break: 1 });
   await expect(p.label).toHaveText('Focus');
   await p.play();
   await page.clock.fastForward(MIN + 1500);
   await expect(p.label).toHaveText('Break');
-  await expect(p.sub).toHaveText('🍅');
+  await expect(p.sub.locator('.ico')).toHaveCount(1);
+  await expect(p.sub.locator('.sr-only')).toHaveText('Sessions completed today: 1'); // the icons are hidden from screen readers
   await page.clock.fastForward(MIN + 1500);
   await expect(p.label).toHaveText('Focus');
   await expect(p.w).toHaveClass(/run/);
@@ -62,14 +81,16 @@ test('an own sequence runs its rounds and then stops', async ({ page }) => {
   await page.clock.fastForward(MIN + 1500);
   await expect(p.label).toHaveText('Long break');
   await page.clock.fastForward(MIN + 1500);
-  await expect(p.sub).toHaveText('Round 2/2 · 🍅');
+  await expect(p.sub).toHaveText(/^Round 2\/2 ·/);
+  await expect(p.sub.locator('.ico')).toHaveCount(1);
   await page.clock.fastForward(MIN + 1500);
   await expect(p.label).toHaveText('Long break');
   await page.clock.fastForward(MIN + 1500);
   await expect(page.locator('#toast')).toContainText('Sequence finished');
   await expect(p.label).toHaveText('Focus');
   await expect(p.w).not.toHaveClass(/run/);
-  await expect(p.sub).toHaveText('Round 1/2 · 🍅🍅');
+  await expect(p.sub).toHaveText(/^Round 1\/2 ·/);
+  await expect(p.sub.locator('.ico')).toHaveCount(2);
 });
 
 test('reset restarts the step, and pressed again the whole sequence', async ({ page }) => {
@@ -96,7 +117,7 @@ test('a timer running before the update keeps running', async ({ page }) => {
   const p = await show(page, { focus: 1, break: 1 }, { phase: 'break', endsAt: 30_000, left: MIN, count: 2 });
   await expect(p.label).toHaveText('Break');
   await expect(p.w).toHaveClass(/run/);
-  await expect(p.sub).toHaveText('🍅🍅');
+  await expect(p.sub.locator('.ico')).toHaveCount(2);
   await page.clock.fastForward(31_000);
   await expect(p.label).toHaveText('Focus');
 });

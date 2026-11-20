@@ -21,6 +21,8 @@ public sealed class ObsTests : IDisposable
     private bool _recording;
     private string _scene = "Desk";
     private TaskCompletionSource? _inputsReady;
+    private TaskCompletionSource? _inputsEntered;
+    private WebSocket? _activeSocket;
 
     public ObsTests()
     {
@@ -43,6 +45,7 @@ public sealed class ObsTests : IDisposable
     {
         var wsc = await ctx.AcceptWebSocketAsync("obswebsocket.json");
         var ws = wsc.WebSocket;
+        _activeSocket = ws;
         async Task Send(object o) => await ws.SendAsync(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(o)), WebSocketMessageType.Text, true, default);
         async Task<JsonNode?> Receive()
         {
@@ -66,7 +69,8 @@ public sealed class ObsTests : IDisposable
                 if (m is null) break;
                 var d = m["d"]!;
                 var type = d["requestType"]!.GetValue<string>();
-                if (type == "GetInputList" && _inputsReady is { } ready) await ready.Task;
+                if (type == "GetInputList") _inputsEntered?.TrySetResult();
+                if (type == "GetInputList" && _inputsReady is { } ready) await ready.Task.WaitAsync(TimeSpan.FromSeconds(15));
                 lock (_requests) _requests.Add(type + (d["requestData"]?["sceneName"] is { } sn ? ":" + sn.GetValue<string>() : ""));
                 object data = type switch
                 {
@@ -202,6 +206,47 @@ public sealed class ObsTests : IDisposable
     {
         Assert.StartsWith("Connected", await ObsMonitor.TestAsync(_ws, Password));
         Assert.NotEqual("Connected", await ObsMonitor.TestAsync(_ws, "wrong"));
+    }
+
+    [Fact]
+    public async Task DisconnectingMidDiscoveryNeverPoisonsCachedDeckSnapshot()
+    {
+        _inputsEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _inputsReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var obs = Monitor(Password);
+        await obs.StartAsync(default);
+        try
+        {
+            await Until(() => obs.Snapshot().Connected);
+            var discovery = obs.DeckSnapshot(default);
+            await _inputsEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            const System.Reflection.BindingFlags fields = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            // DeckSnapshot stores the shared discovery once it first yields, which can be just after the request arrives
+            Task<JsonObject>? refresh = null;
+            for (var i = 0; i < 40 && refresh is null; i++)
+            {
+                refresh = (Task<JsonObject>?)typeof(ObsMonitor).GetField("_deckRefresh", fields)!.GetValue(obs);
+                if (refresh is null) await Task.Delay(50);
+            }
+            Assert.NotNull(refresh);
+
+            try { await _activeSocket!.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "bye", default); } catch { }
+            _activeSocket?.Abort();
+            _inputsReady.TrySetResult();
+
+            var snap = await discovery.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(snap["connected"]!.GetValue<bool>());
+            // DeckSnapshot may answer "loading" before discovery ends: the shared discovery itself must finish
+            // disconnected and leave no deck behind
+            var discovered = await refresh.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.False(discovered["connected"]!.GetValue<bool>());
+            Assert.Null(typeof(ObsMonitor).GetField("_deck", fields)!.GetValue(obs));
+        }
+        finally
+        {
+            _inputsReady.TrySetResult();
+            await obs.StopAsync(default);
+        }
     }
 
     public void Dispose()

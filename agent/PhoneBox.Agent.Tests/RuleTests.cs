@@ -38,8 +38,142 @@ public class RuleTests
     [InlineData("\"closed\"", "!=", "open", true)]
     [InlineData("{\"value\":31,\"sub\":\"living room\"}", ">", "30", true)]
     [InlineData("\"warm\"", ">", "20", false)]       // not a number
+    [InlineData("28", ">=", "28", true)]              // the boundary counts for >= and <=, not for > and <
+    [InlineData("27.9", ">=", "28", false)]
+    [InlineData("28", ">", "28", false)]
+    [InlineData("20", "<=", "20", true)]
+    [InlineData("\"20.5\"", "<=", "20", false)]
+    [InlineData("20", "<", "20", false)]
+    [InlineData("{\"value\":30,\"sub\":\"living room\"}", ">=", "30", true)]
+    [InlineData("\"warm\"", "<=", "20", false)]
     public void PushedValuesCompare(string json, string op, string arg, bool expected) =>
         Assert.Equal(expected, RuleEngine.Compare(JsonDocument.Parse(json).RootElement, op, arg));
+
+    private const long Start = 1_800_000_000_000; // the agent's start, unix ms
+    private static PushItem Pushed(long at) => new(JsonSerializer.SerializeToElement(21.5), at, null);
+
+    [Fact]
+    public void StaleHoldsOnceAValueIsOlderThanTheLimit()
+    {
+        var now = Start + 3_600_000;
+        Assert.False(RuleEngine.Stale("temp", Pushed(now - 30_000), "60", now, Start).Holds);  // fresh
+        var (holds, detail) = RuleEngine.Stale("temp", Pushed(now - 5 * 60_000), "60", now, Start);
+        Assert.True(holds);
+        Assert.Equal("temp: no update for 5 min", detail);
+        Assert.True(RuleEngine.Stale("temp", Pushed(now - 60_000), "60", now, Start).Holds);   // exactly the limit
+    }
+
+    [Fact]
+    public void StaleGivesTheSenderTimeAfterTheAgentStarts()
+    {
+        // missing (never pushed, deleted or expired): not stale during the first N seconds, stale after them
+        Assert.False(RuleEngine.Stale("temp", null, "60", Start + 59_000, Start).Holds);
+        var (holds, detail) = RuleEngine.Stale("temp", null, "60", Start + 60_000, Start);
+        Assert.True(holds);
+        Assert.Equal("temp: no value", detail);
+        // a value kept from before a restart counts from the start too, but reports its real age
+        var old = Pushed(Start - 2 * 3_600_000);
+        Assert.False(RuleEngine.Stale("temp", old, "60", Start + 10_000, Start).Holds);
+        Assert.Equal("temp: no update for 2 h", RuleEngine.Stale("temp", old, "60", Start + 60_000, Start).Detail);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("soon")]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("Infinity")]
+    [InlineData("NaN")]
+    public void StaleWithoutAValidTimeNeverHolds(string? arg) =>
+        Assert.False(RuleEngine.Stale("temp", null, arg, Start + 86_400_000, Start).Holds);
+
+    [Theory]
+    [InlineData("https://calendar.example/feed.ics?token=secret")]
+    [InlineData("two words")]
+    public void StaleIgnoresAMatchThatCannotBeAPushKey(string key) =>
+        Assert.Equal((false, ""), RuleEngine.Stale(key, null, "60", Start + 86_400_000, Start));
+
+    [Theory]
+    [InlineData("\"90\"", "90")]
+    [InlineData("\"2.4\"", "2")]
+    [InlineData("\"999999\"", "86400")]
+    [InlineData("\"soon\"", "60")]
+    [InlineData("\"Infinity\"", "60")]
+    [InlineData("null", "60")]
+    public void StaleTimesAreCleaned(string arg, string expected)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"phonebox-cfg-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, $$"""{ "rules": [ { "when": "push", "match": "temp", "op": "stale", "arg": {{arg}}, "then": "notify" }, { "when": "push", "match": "temp", "op": ">=", "arg": "30", "then": "notify" } ] }""");
+        try
+        {
+            var rules = new ConfigStore(path).Get().Rules;
+            Assert.Equal("stale", rules[0].Op);
+            Assert.Equal(expected, rules[0].Arg);
+            Assert.Equal(">=", rules[1].Op);
+            Assert.Equal("30", rules[1].Arg);   // other operators keep their value as typed
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void StaleRuleFiresForAnExpiredValueAndEndsWhenTheValueComesBack()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"phonebox-rule-stale-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        PushStore? push = null;
+        try
+        {
+            var cfgPath = Path.Combine(dir, "config.json");
+            File.WriteAllText(cfgPath, """
+            { "rules": [ { "id": "quiet", "name": "Quiet", "when": "push", "match": "a3-vibration", "op": "stale", "arg": "5",
+                           "then": "notify", "text": "{detail}", "whileActive": false } ] }
+            """);
+            var cfg = new ConfigStore(cfgPath);
+            push = new PushStore(Microsoft.Extensions.Logging.Abstractions.NullLogger<PushStore>.Instance, Path.Combine(dir, "push.json"));
+            var engine = NewEngine(cfg, push);
+
+            // pushed with a one-second ttl, then expired: the store no longer has it
+            push.Set("a3-vibration", JsonSerializer.SerializeToElement(0.01), 1);
+            Thread.Sleep(1200);
+            Assert.Null(push.Get("a3-vibration"));
+
+            engine.StartedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();   // the grace counts from here, not from before the sleep
+            engine.Evaluate();   // just started: the sender still has time
+            Assert.Empty(engine.Active());
+
+            engine.StartedAtMs -= 10_000;
+            var seq = push.Seq;
+            engine.Evaluate();
+            Assert.Equal(["quiet"], engine.Active());
+            Assert.Equal("a3-vibration: no value", push.Since(seq).Single(e => e.Kind == "notify").Data!.Value.GetProperty("text").GetString());
+
+            push.Set("a3-vibration", JsonSerializer.SerializeToElement(0.01), null);
+            engine.Evaluate();
+            Assert.Equal(["quiet"], engine.Active());           // a rule ends once its condition stays off a while
+            Thread.Sleep(RuleEngine.ReleaseSec * 1000 + 200);
+            engine.Evaluate();
+            Assert.Empty(engine.Active());
+        }
+        finally
+        {
+            push?.Dispose();
+            Directory.Delete(dir, true);
+        }
+    }
+
+    private static RuleEngine NewEngine(ConfigStore cfg, PushStore push) => new(cfg, push,
+        new SessionMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<SessionMonitor>.Instance),
+        new MediaMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<MediaMonitor>.Instance),
+        new SystemMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<SystemMonitor>.Instance),
+        new PrivacyMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<PrivacyMonitor>.Instance),
+        new CalendarMonitor(cfg, Microsoft.Extensions.Logging.Abstractions.NullLogger<CalendarMonitor>.Instance),
+        new ObsMonitor(cfg, Microsoft.Extensions.Logging.Abstractions.NullLogger<ObsMonitor>.Instance),
+        new QuotaMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<QuotaMonitor>.Instance),
+        new GitHubMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<GitHubMonitor>.Instance),
+        new BatteryMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<BatteryMonitor>.Instance),
+        new PingMonitor(), new AudioControl(),
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<RuleEngine>.Instance);
 
     [Theory]
     [InlineData("08:30-typo", 8, 30, false)]
@@ -69,6 +203,84 @@ public class RuleTests
             Assert.Null(r.During);
         }
         finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void WhileActiveShortcutRulesKeepAlreadyOnTogglesOnAndReviewRequestedCountsOnlyMatchingNonDrafts()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"phonebox-rule-toggle-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        PushStore? push = null;
+        try
+        {
+            var cfgPath = Path.Combine(dir, "config.json");
+            File.WriteAllText(cfgPath, """
+            {
+              "shortcuts": [{ "id": "lamp", "label": "Lamp", "cmd": "builtin:macro", "toggle": true }],
+              "rules": [
+                { "id": "call", "name": "Call", "when": "push", "match": "mic", "then": "shortcut", "shortcut": "lamp", "whileActive": true },
+                { "id": "rev", "name": "Rev", "when": "review-requested", "match": "org/target", "then": "notify", "text": "{detail}" }
+              ]
+            }
+            """);
+            var cfg = new ConfigStore(cfgPath);
+            push = new PushStore(Microsoft.Extensions.Logging.Abstractions.NullLogger<PushStore>.Instance, Path.Combine(dir, "push.json"));
+            var gh = new GitHubMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<GitHubMonitor>.Instance);
+            typeof(GitHubMonitor).GetField("_snap", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .SetValue(gh, new GhSnapshot("me", 0,
+                [
+                    new GhPr("org/target", 42, "Ready", "alice", Draft: false, null, null, 0),
+                    new GhPr("org/target", 43, "Draft", "bob", Draft: true, null, null, 0),
+                    new GhPr("org/other", 99, "Other", "eve", Draft: false, null, null, 0),
+                ], [], 0, null));
+
+            var engine = new RuleEngine(cfg, push,
+                new SessionMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<SessionMonitor>.Instance),
+                new MediaMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<MediaMonitor>.Instance),
+                new SystemMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<SystemMonitor>.Instance),
+                new PrivacyMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<PrivacyMonitor>.Instance),
+                new CalendarMonitor(cfg, Microsoft.Extensions.Logging.Abstractions.NullLogger<CalendarMonitor>.Instance),
+                new ObsMonitor(cfg, Microsoft.Extensions.Logging.Abstractions.NullLogger<ObsMonitor>.Instance),
+                new QuotaMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<QuotaMonitor>.Instance),
+                gh,
+                new BatteryMonitor(Microsoft.Extensions.Logging.Abstractions.NullLogger<BatteryMonitor>.Instance),
+                new PingMonitor(), new AudioControl(),
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<RuleEngine>.Instance);
+
+            var lamp = cfg.Get().Shortcuts.Single();
+            Assert.Null(Shortcuts.Run(cfg.Get(), "lamp", Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, push));
+            Assert.Equal(true, Shortcuts.State(lamp, push, null));
+
+            push.Set("mic", JsonSerializer.SerializeToElement(true), null);
+            var seq = push.Seq;
+            engine.Evaluate();
+            Assert.Equal(true, Shortcuts.State(lamp, push, null));
+            Assert.Equal("org/target#42", push.Since(seq).Single(e => e.Kind == "notify").Data!.Value.GetProperty("text").GetString());
+
+            engine.Pause(5);
+            engine.Evaluate();
+            Assert.Equal(false, Shortcuts.State(lamp, push, null));
+        }
+        finally
+        {
+            push?.Dispose();
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public void MacroShortcutStepsUpdateToggleStateAndRunOffCmd()
+    {
+        var lampId = "macro-lamp-" + Guid.NewGuid().ToString("N");
+        var lamp = new Shortcut { Id = lampId, Label = "Lamp", Toggle = true, Cmd = "builtin:macro", OffCmd = "builtin:keys", OffArgs = "bad_off_key" };
+        var macro = new Shortcut { Id = "scene", Label = "Scene", Cmd = "builtin:macro", Steps = [$"shortcut:{lampId}"] };
+        var cfg = new AgentConfig { Shortcuts = [lamp, macro] };
+
+        Assert.Null(Shortcuts.Run(cfg, "scene", Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance));
+        Assert.Equal(true, Shortcuts.State(lamp, null, null));
+        var second = Shortcuts.Run(cfg, "scene", Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        Assert.NotNull(second);
+        Assert.Contains("bad_off_key", second);
     }
 }
 
@@ -130,6 +342,25 @@ public class UsbDoctorTests
     [Fact]
     public void ChargingWithoutDataBlamesTheCable() =>
         Assert.Contains("only carries power", UsbDoctor.Diagnose(R(true, "none", source: "ac"), false, Now));
+
+    [Fact]
+    public void WirelessChargingWithoutUsbDoesNotBlameACable()
+    {
+        Assert.Contains("only carries power", UsbDoctor.Diagnose(R(true, "none", source: "usb"), false, Now));
+        var actual = UsbDoctor.Diagnose(R(true, "none", source: "wireless"), false, Now);
+        Assert.True(actual is null, $"EXPECTED: no diagnosis | ACTUAL: {actual}");
+        Assert.Contains("USB debugging is off", UsbDoctor.Diagnose(R(true, "connected", source: "wireless"), false, Now));
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(-1, false)]
+    [InlineData(-300_000, false)]
+    public void BatteryReportsFromBeforeAClockRollbackDoNotRaiseADiagnosis(long ageMs, bool expected)
+    {
+        var actual = UsbDoctor.Diagnose(R(true, "none", ageMs, "ac"), false, Now) is not null;
+        Assert.True(expected == actual, $"EXPECTED: diagnosis={expected} | ACTUAL: diagnosis={actual}");
+    }
 
     [Fact]
     public void ConnectedWithAdbButUnseenBlamesThePort() =>

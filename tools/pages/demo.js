@@ -57,11 +57,11 @@
         { id: 'music', label: 'Music', levels: [], actions: [], output: null, input: null, defaults: {} }],
         spotifyToken: null, spotifyDevice: null, mixerExecutable: null, mixerLibrary: null, spotifyClientId: null, spotifyRefreshToken: null },
       deviceSerial: null, adbPath: null,
-      weather: { city: 'Tallinn', lat: 59.437, lon: 24.745 },
+      weather: { city: 'Tallinn', lat: 59.437, lon: 24.745, unit: 'celsius', model: '' },
       night: { enabled: false, start: '00:30', end: '07:30', brightness: 0.02 },
       display: { appearance: null, showSeconds: true, hour12: false, idleReturnSec: 0, vibrate: true, volumeKeys: true, orientation: 'landscape', theme: 'default', accent: '#2dd4bf',
         pixelShift: false, idleDimMin: 0,
-        artTint: true, autoBrightness: false, nightWhenDark: false, proximityWake: true, pin: false, homeScreen: false, keepAwake: true, followComputerLock: false,
+        artTint: true, autoBrightness: false, nightWhenDark: false, proximityWake: true, pin: false, homeScreen: false, keepAwake: true, openOnConnect: true, followComputerLock: false,
         homePage: null, switchCountdownSec: 3, touchGraceSec: 20, minDwellSec: 15, holdMaxMin: 30 },
       lan: { enabled: true, port: 8766, token: 'demo', webhookToken: 'demo-webhook-key' },
       updates: { auto: true, repo: 'ersinkoc/phonebox' },
@@ -112,7 +112,10 @@
       weather: c.weather, codexBar: c.codexBar, night: c.night, display: c.display,
       pages: (c.pages || []).map((p) => ({ id: p.id, title: p.title, icon: p.icon, enabled: p.enabled !== false, idleSec: p.idleSec ?? null, appearance: p.appearance ?? null,
         widgets: (p.widgets || []).map((w) => ({ id: w.id, type: w.type, x: w.x, y: w.y, w: w.w, h: w.h, appearance: w.appearance ?? null, options: options(w) })) })),
-      shortcuts: (c.shortcuts || []).map(({ id, label, icon, color, toggle, cmd }) => ({ id, label, icon, color, toggle: !!toggle || cmd === 'builtin:mute' })),
+      // iconRev / iconUpload: the agent sets them when a shortcut has a picture (and when the user uploaded it). The demo
+      // has no uploads and serves no /agent/api/shortcuts/icon, so a config that sets them also needs that image mocked
+      // (see button-cover.spec.js); without one the key keeps its emoji.
+      shortcuts: (c.shortcuts || []).map(({ id, label, icon, color, toggle, cmd, iconRev, iconUpload }) => ({ id, label, icon, color, toggle: !!toggle || cmd === 'builtin:mute', iconRev: iconRev ?? null, iconUpload: iconUpload === true })),
       rules: (c.rules || []).map(({ id, name, enabled, when }) => ({ id, name, enabled: enabled !== false, when })),
       charge: { enabled: !!c.charge?.enabled, min: c.charge?.min ?? 50, max: c.charge?.max ?? 80 },
     };
@@ -293,7 +296,8 @@
     const pr = (repo, number, title, ci = null, review = null, draft = false, author = null) => ({ repo, number, title, ci, review, draft, author, updated: n - (number % 9 + 1) * 3600e3 });
     return {
       sessions: [s(1, 'claude', 'api-gateway', 'busy', 4), s(2, 'claude', 'docs-site', 'waiting', 2, 'approve a file edit'), s(3, 'codex', 'mobile-app', 'busy', 11),
-        s(4, 'claude', 'infra', 'shell', 1), s(5, 'claude', 'blog-engine', 'idle', 38), s(6, 'codex', 'data-pipeline', 'idle', 74), s(7, 'claude', 'design-system', 'idle', 125)],
+        s(4, 'claude', 'infra', 'shell', 1), s(5, 'claude', 'blog-engine', 'idle', 38), s(6, 'codex', 'data-pipeline', 'idle', 74), s(7, 'claude', 'design-system', 'idle', 125),
+        s(8, 'cursor', 'phonebox', 'busy', 3), s(9, 'cursor', 'fueltrack', 'idle', 1)],
       github: { user: 'octocat', notifications: 7, error: null, updatedAt: n - 90e3,
         reviewRequests: [pr('acme/api', 412, 'Rate limiter for public endpoints', null, null, false, 'hubot'), pr('acme/web', 1288, 'Dark mode for the dashboard', null, null, false, 'monalisa'),
           pr('acme/infra', 77, 'Move staging to a new region', null, null, false, 'hubot')],
@@ -506,6 +510,19 @@
     if (path.startsWith('/api/controls/command/') && method === 'POST') return json(await controlCommand(path.split('/').pop(), q));
     if (path === '/api/state') return json(state(q.has('ev') ? +q.get('ev') : null));
     if (path === '/api/config') return json({ version: cfgVersion(), config: publicConfig(await config()) });
+    if (path.startsWith('/api/widget/') && path.endsWith('/note') && method === 'POST') {
+      const parts = path.split('/');
+      const pageId = decodeURIComponent(parts[3]);
+      const widgetId = decodeURIComponent(parts[4]);
+      const c = await config();
+      const pg = (c.pages || []).find((p) => p.id === pageId);
+      const w = pg && (pg.widgets || []).find((x) => x.id === widgetId);
+      if (!w || w.type !== 'note') return json({ error: 'option not allowed' }, 400);
+      w.options = { ...(w.options || {}), text: q.get('text') || '' };
+      store.set('pb-demo-config', c);
+      store.set('pb-demo-version', cfgVersion() + 1);
+      return json({ version: cfgVersion() });
+    }
     if (path === '/api/volume' && method === 'POST') {
       // the agent answers with the new volume state (AudioSnapshot)
       const op = q.get('op'), level = q.has('level') ? +q.get('level') : null;
@@ -534,6 +551,22 @@
       return json({});
     }
     if (path === '/api/quotas') return json(quotas());
+    // made-up recent messages and steps of a Claude Code session (the real ones come from its chat file, and only when switched on)
+    if (path === '/api/work/conversation') {
+      const n = Date.now();
+      return json({ enabled: true,
+        messages: [
+          { role: 'user', text: 'Add a retry to the upload helper', at: n - 9 * 60e3 },
+          { role: 'assistant', text: 'I added three retries with a short pause between them and a test for the failing case.', at: n - 7 * 60e3 },
+          { role: 'user', text: 'Does it also cover timeouts?', at: n - 2 * 60e3 },
+          { role: 'assistant', text: 'Yes, a timeout counts as a failed attempt and is retried the same way.', at: n - 60e3 },
+        ],
+        steps: [
+          { tool: 'Read', detail: 'upload.js', at: n - 8 * 60e3, running: false },
+          { tool: 'Edit', detail: 'upload.js', at: n - 7 * 60e3, running: false },
+          { tool: 'Bash', detail: 'npm', at: n - 20e3, running: true },
+        ] });
+    }
     if (path === '/api/calendar') return json(calendar());
     if (path === '/api/docker') return json({ ...docker(), control: allows(await config(), (t) => t === 'docker') });
     if (path === '/api/obs') { const c = await config(); return json({ ...obsState(), enabled: c.obs?.enabled !== false, control: widgets(c).some((w) => w.type === 'obs' && w.options?.control === true) }); }
@@ -590,6 +623,17 @@
       return DEMO_APPS.some((a) => a.id === q.get('id')) ? json({ ok: true }) : json({ error: 'Unknown app' }, 400);
     }
     // Dictation: the demo PC "types" the text if that widget allows it (Dictation.TypeAsync)
+    // Camera: like CameraFeeds, a picture only for a camera widget on an enabled page with a camera chosen; the demo's
+    // "camera" draws a moving sweep with the time instead of a stream
+    if (path === '/api/camera') {
+      const c = await config();
+      const w = panelWidget(c, q.get('widget'), 'camera');
+      if (!w) return json({ state: 'unknown' }, 404);
+      if (!w.options?.camera || !(c.cameras?.sources || []).some((s) => s.id === w.options.camera)) return json({ state: 'pick' }, 404);
+      const d = new Date(), x = (d.getTime() / 25) % 640;
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><rect width="640" height="360" fill="#1f2937"/><rect y="250" width="640" height="110" fill="#374151"/><rect x="${x.toFixed(0)}" y="0" width="6" height="360" fill="#22d3ee" opacity=".5"/><text x="16" y="34" fill="#fff" font-family="monospace" font-size="22">CAM 1  ${d.toTimeString().slice(0, 8)}</text></svg>`;
+      return new Response(svg, { status: 200, headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' } });
+    }
     if (path === '/api/dictate' && method === 'POST') {
       if (panelWidget(await config(), q.get('widget'), 'dictate')?.options?.control !== true)
         return json({ error: 'typing is off: turn on "Type the text on the computer" in the dictation widget\'s settings' }, 403);
@@ -613,6 +657,7 @@
       if (!allows(await config(), isObs)) return json({ error: "controlling OBS is turned off in the widget's settings" }, 400);
       return obsAct(path.slice(9), q.get('scene')) ? json({ ok: true }) : json({ error: 'unknown action' }, 400);
     }
+    if (path === '/api/ha/entities') return json({ configured: true, error: null, entities: Object.keys(ha).sort().map((id) => ({ id, name: ha[id].name, switchable: /^(light|switch|lock|scene)\./.test(id) })) });
     if (path === '/api/ha/states') return json(haStates((q.get('ids') || '').split(',').filter(Boolean)));
     if (path.startsWith('/api/ha/toggle/') && method === 'POST') { haToggle(decodeURIComponent(path.slice(15))); return json({ ok: true }); }
     if (path.startsWith('/api/docker/') && method === 'POST') {

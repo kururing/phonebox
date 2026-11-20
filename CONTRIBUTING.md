@@ -15,7 +15,9 @@ page lists what reviews keep asking for; following it gets a pull request merged
 
 ## The security model, in short
 
-- The agent listens on `127.0.0.1` (the phone reaches it through `adb reverse`). The optional Wi-Fi port serves only
+- The agent listens on `127.0.0.1`. The phone's `adb reverse` tunnel ends on a loopback port of its own
+  (`agent/PhoneBox.Agent/UsbLink.cs`): TLS pinned by the app, the app's USB key, and the same allow-list as Wi-Fi
+  plus the pairing data and the feed proxy. The optional Wi-Fi port serves only
   the paths on the allow-list in `agent/PhoneBox.Agent/Lan.cs`, over TLS pinned to the paired certificate, with the
   paired key. Settings, pairing and tests stay local. **Adding a path to that allow-list is a security decision**:
   say in the pull request why the phone needs it.
@@ -49,10 +51,12 @@ page lists what reviews keep asking for; following it gets a pull request merged
   `android/app/src/main/assets/www/widgets/`, an icon in `WIDGET_ICONS`, the README count (`tools/check-release.py`
   checks it) and, if it calls the agent, a mock in `tools/pages/demo.js` so the web demo and the UI tests can render
   it. Outside the app (no native bridge) it must show an empty state, not throw.
-- **The Android app** targets Android 7.0 (API 24) and later and runs the panel in the system WebView. On Android 7
-  to 9 that WebView comes from Chrome, so its version doesn't follow the Android version. The panel needs Chrome 105
-  or later (container query units); below that, `index.html` shows an update notice from a plain script that runs even
-  when the panel's modules don't. Changing `minSdk` needs `./gradlew lintDebug` to pass and a note on the devices
+- **The Android app** targets Android 5.0 (API 21) and later and runs the panel in the system WebView, which is
+  updated through the Play Store, so its version doesn't follow the Android version. The panel runs from Chromium 83
+  (`compat.js` fills in the newer DOM APIs) and scales widgets fully from Chrome 105 (container query units); below
+  that, `index.html` shows an update notice from a plain script that runs even when the panel's modules don't. The
+  last WebView for Android 6 is 106, so widgets scale fully on Android 6; for Android 5 it is 95, so widgets there don't
+  scale as well. Calls above API 21 need a version check (`./gradlew lintRelease` reports them as NewApi). Changing `minSdk` needs `./gradlew lintDebug` to pass and a note on the devices
   and WebView versions you tried.
 - **Don't change behaviour users rely on** (removing a choice, renaming a setting, changing a default) without
   migrating existing settings and saying so in the pull request.

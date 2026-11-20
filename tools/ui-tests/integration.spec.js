@@ -1,17 +1,23 @@
 const { test, expect } = require('@playwright/test');
 
 async function layout(page, widgets, extra = {}) {
-  await page.goto('/panel/');
+  await page.goto('/panel/style.css');
   await page.evaluate(({ widgets, extra }) => {
     localStorage.clear();
     // Widget interaction tests must not depend on the host's wall-clock night schedule.
     localStorage.setItem('pb-demo-config', JSON.stringify({ night: { enabled: false }, ...extra, pages: [{ id: 'test', title: 'Test', enabled: true, widgets }], shortcuts: [] }));
   }, { widgets, extra });
-  await page.reload();
+  await page.goto('/panel/');
   await expect(page.locator('.w').first()).toBeVisible();
   await expect(page.locator('body')).not.toHaveClass(/night/);
 }
 const widget = (type, options = {}) => ({ id: 'test', type, x: 0, y: 0, w: 12, h: 6, options });
+
+test('fixture initialization preserves its layout when default bootstrap completion is delayed', async ({ page }) => {
+  const { gatedLayout } = require('./layout-ordering');
+  expect(await gatedLayout(page, layout)).toEqual(['test']);
+  await expect(page.locator('.w-note')).toHaveText('owned-layout');
+});
 
 for (const viewport of [{ width: 780, height: 360 }, { width: 360, height: 780 }]) {
   test(`stack renders children, changes cards and follows live data at ${viewport.width}px`, async ({ page }) => {
@@ -75,6 +81,20 @@ test('a timer in a stack rings when another page is active', async ({ page }) =>
   await expect(page.locator('#toast')).toContainText('Time is up', { timeout: 1200 });
 });
 
+test('clock status line can hide quota providers', async ({ page }) => {
+  await layout(page, [widget('clock', { providers: ['claude'] })]);
+  const status = page.locator('.w-clock .status');
+  await expect(status).toContainText('Claude');
+  await expect(status).not.toContainText('Codex');
+  await layout(page, [widget('clock', { providers: [] })]);
+  // An early "no Claude" would pass before /api/quotas answers: wait for a rendered status
+  // line and the quota payload, then both providers must be absent.
+  await expect(page.locator('.w-clock .status')).toContainText('82%');
+  await page.waitForFunction(async () => (await import('/panel/main.js')).D.quotas !== null);
+  await expect(page.locator('.w-clock .status')).not.toContainText('Claude');
+  await expect(page.locator('.w-clock .status')).not.toContainText('Codex');
+});
+
 test('quota selection preserves empty selections and explains missing data', async ({ page }) => {
   await layout(page, [widget('quotas', { providers: [] })]);
   await expect(page.locator('.w-quotas')).toContainText('No quota providers enabled');
@@ -92,6 +112,7 @@ test('session sheet shows counters and keeps prompt content out of the panel', a
   await page.getByRole('button', { name: /project/ }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toContainText('test-model');
+  await expect(dialog.locator('button.session-close svg.ico')).toBeVisible();
   await expect(dialog).toContainText('1.2k');
   await expect(dialog).toContainText('read');
   await page.getByRole('button', { name: 'Close session details' }).click();
@@ -285,6 +306,26 @@ test('settings Display Time format select saves false, true and auto', async ({ 
   await expect(sel).toHaveValue('auto');
 });
 
+// The feeds, cameras, console, Discord and ping editors (and each control action's "enabled") fill in their defaults
+// while they render. The unsaved-changes baseline used to be taken before that, so a page that had just loaded already
+// offered Save, and Revert could never get back to a clean state.
+test('a freshly loaded settings page has nothing to save, and Revert gets back to that', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await page.goto('/settings/#general');
+  // the Advanced JSON box is empty in the markup and filled by the changed() at the end of load(): from here on the
+  // config is rendered, the form handlers are bound and the baseline is taken (both buttons start disabled anyway)
+  await expect(page.locator('#json')).toHaveValue(/"pages"/);
+  await expect(page.locator('#save')).toBeDisabled();
+  await expect(page.locator('#revert')).toBeDisabled();
+
+  await page.locator('input[data-bind="night.brightness"]').fill('0.1');
+  await expect(page.locator('#save')).toBeEnabled();
+  await page.locator('#revert').click();
+  await expect(page.locator('#save')).toBeDisabled();
+  await expect(page.locator('#revert')).toBeDisabled();
+  await expect(page.locator('#nbv')).toHaveText('2%');
+});
+
 test('multi option preserves saved unlisted quota provider IDs when toggling choices', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 860 });
   await layout(page, [widget('quotas', { providers: ['claude', 'alibaba'] })]);
@@ -378,6 +419,95 @@ test('a new weather location never shows the previous place\'s forecast', async 
   await expect(page.locator('.wx-temp')).not.toHaveText('31°');
 });
 
+// weather.unit converts on the phone: the forecast is cached in °C, so the clock line and both forecast ranges show °F
+// without a new request, a unit change from the settings redraws at the next config poll (not at the next forecast
+// refresh, up to 14 minutes later), and a config that has no unit (saved before the setting existed) stays in °C.
+test('the weather shows Fahrenheit when the settings say so', async ({ page }) => {
+  const now = new Date();
+  const hour = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:00`;
+  const forecast = {
+    current: { time: hour, temperature_2m: 31, apparent_temperature: 29.5, weather_code: 0, is_day: 1 },
+    daily: { time: [hour.slice(0, 10)], weather_code: [0], temperature_2m_max: [32], temperature_2m_min: [-5], precipitation_probability_max: [0] },
+    hourly: { time: [hour], weather_code: [0], temperature_2m: [20], precipitation_probability: [0], is_day: [1] },
+  };
+  let requests = 0;
+  await page.route('https://api.open-meteo.com/**', (route) => { requests++; route.fulfill({ json: forecast }); });
+  const widgets = [{ ...widget('clock', { weather: true }), h: 2 }, { ...widget('forecast', { mode: 'daily' }), y: 2, h: 2 }, { ...widget('forecast', { mode: 'hourly' }), y: 4, h: 2 }];
+  await layout(page, widgets, { weather: { city: 'Alpha', lat: 10, lon: 10, unit: 'fahrenheit' } });
+  await expect(page.locator('.wx-temp')).toHaveText('88°');
+  await expect(page.locator('.wx-range')).toHaveText('↑90° ↓23° · Feels like 85°');
+  await expect(page.locator('.fc-v').first()).toHaveText('90° 23°');
+  await expect(page.locator('.fc-v').nth(1)).toHaveText('68°');
+  expect(requests).toBe(1);
+
+  // the settings page saved Celsius: the next config poll redraws from the cached forecast, with no new request
+  await page.evaluate(async () => {
+    const c = JSON.parse(localStorage.getItem('pb-demo-config'));
+    localStorage.setItem('pb-demo-config', JSON.stringify({ ...c, weather: { ...c.weather, unit: 'celsius' } }));
+    const m = await import('./main.js');
+    await m.loadConfig();
+  });
+  await expect(page.locator('.wx-temp')).toHaveText('31°');
+  await expect(page.locator('.wx-range')).toHaveText('↑32° ↓-5° · Feels like 30°');
+  await expect(page.locator('.fc-v').first()).toHaveText('32° -5°');
+  await expect(page.locator('.fc-v').nth(1)).toHaveText('20°');
+  expect(requests).toBe(1);
+
+  await layout(page, widgets, { weather: { city: 'Alpha', lat: 10, lon: 10 } });
+  await expect(page.locator('.wx-temp')).toHaveText('31°');
+  await expect(page.locator('.fc-v').first()).toHaveText('32° -5°');
+});
+
+// weather.model pins the Open-Meteo model: the forecast URL names it, a model change fetches anew instead of keeping the
+// cached forecast for 14 minutes, and Automatic ("") sends no models parameter at all.
+test('the weather asks Open-Meteo for the model the settings pick', async ({ page }) => {
+  const now = new Date();
+  const hour = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}T${String(now.getHours()).padStart(2, '0')}:00`;
+  const urls = [];
+  await page.route('https://api.open-meteo.com/**', (route) => {
+    const model = new URL(route.request().url()).searchParams.get('models');
+    urls.push(model);
+    const t = model === 'gfs_seamless' ? 19 : 21;
+    route.fulfill({ json: {
+      current: { time: hour, temperature_2m: t, apparent_temperature: t, weather_code: 3, is_day: 0 },
+      daily: { time: [hour.slice(0, 10)], weather_code: [3], temperature_2m_max: [22], temperature_2m_min: [17], precipitation_probability_max: [0] },
+      hourly: { time: [hour], weather_code: [3], temperature_2m: [t], precipitation_probability: [0], is_day: [0] },
+    } });
+  });
+  const widgets = [{ ...widget('clock', { weather: true }), h: 2 }];
+  await layout(page, widgets, { weather: { city: 'Alpha', lat: 10, lon: 10, model: 'gfs_seamless' } });
+  await expect(page.locator('.wx-temp')).toHaveText('19°');
+  expect(urls).toEqual(['gfs_seamless']);
+
+  await page.evaluate(async () => {
+    const c = JSON.parse(localStorage.getItem('pb-demo-config'));
+    localStorage.setItem('pb-demo-config', JSON.stringify({ ...c, weather: { ...c.weather, model: '' } }));
+    const m = await import('./main.js');
+    await m.loadConfig();
+  });
+  await expect(page.locator('.wx-temp')).toHaveText('21°');
+  expect(urls).toEqual(['gfs_seamless', null]);
+});
+
+// Météo-France and CMA forecast fewer than 7 days and send null for the days after: the forecast stops at the last
+// real day instead of showing "0° 0°" (Math.round(null)) under a blank icon.
+test('a forecast whose last days are null shows only the days it has', async ({ page }) => {
+  const now = new Date();
+  const day = (k) => { const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + k, 12); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  const hour = `${day(0)}T${String(now.getHours()).padStart(2, '0')}:00`;
+  const days = [0, 1, 2, 3, 4, 5, 6].map(day);
+  await page.route('https://api.open-meteo.com/**', (route) => route.fulfill({ json: {
+    current: { time: hour, temperature_2m: 12, apparent_temperature: 12, weather_code: 3, is_day: 1 },
+    daily: { time: days, weather_code: [3, 3, 3, 3, null, null, null], temperature_2m_max: [14, 15, 16, 17, null, null, null],
+      temperature_2m_min: [8, 9, 10, 11, null, null, null], precipitation_probability_max: [null, null, null, null, null, null, null] },
+    hourly: { time: [hour], weather_code: [3], temperature_2m: [12], precipitation_probability: [null], is_day: [1] },
+  } }));
+  await layout(page, [{ ...widget('forecast', { mode: 'daily' }), w: 12, h: 3 }], { weather: { city: 'Alpha', lat: 10, lon: 10, model: 'meteofrance_seamless' } });
+  await expect(page.locator('.fc-v').first()).toHaveText('14° 8°');
+  await expect(page.locator('.fc-v')).toHaveCount(4);
+  await expect(page.locator('.fc-v', { hasText: /^0°/ })).toHaveCount(0);
+});
+
 // PRIVACY.md: the phone sends the weather location to Open-Meteo only while a page has a widget that uses the weather.
 test('the weather is fetched only while a widget needs it', async ({ page }) => {
   const asked = [];
@@ -449,7 +579,8 @@ test('the Computers widget lists paired computers and switches between them', as
   await layout(page, [widget('pcswitch')]);
 
   const pcs = page.locator('.w-pcswitch .ov-pc');
-  await expect(pcs).toHaveText(['🖥️ Desk PC', '🖥️ MacBook']);
+  await expect(pcs).toHaveText(['Desk PC', 'MacBook']);
+  await expect(pcs.locator('svg.ico')).toHaveCount(2); // a stroke icon, not the emoji an old WebView draws however it likes
   await expect(pcs.nth(0)).toHaveClass(/\bon\b/);
   await pcs.nth(0).click();
   await pcs.nth(1).click();
@@ -520,6 +651,54 @@ test('news feeds list headlines and open one on the PC by its id', async ({ page
   await expect(page.locator('.w-feeds .empty')).toHaveText('No headlines from "nothing like this"');
 });
 
+// #108: the list scrolls (and keeps its place when the ages refresh), an opened article loses its accent bar on
+// this phone, and a headline can take two or three lines.
+test('news feeds scroll, mark opened articles and wrap headlines', async ({ page }) => {
+  await layout(page, [{ ...widget('feeds', { title: 'News', open: true }), h: 2 }]);
+  const list = page.locator('.w-feeds .fd-list');
+  await expect(page.locator('.w-feeds .fd-i')).toHaveCount(6);
+  // more headlines than fit: the list scrolls instead of dropping them
+  expect(await list.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  await list.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  const bottom = await list.evaluate((el) => el.scrollTop);
+  expect(bottom).toBeGreaterThan(0);
+
+  // every headline starts with the accent bar; opening one takes it away, and the list stays where it was scrolled
+  await expect(page.locator('.w-feeds .fd-i.link.read')).toHaveCount(0);
+  await page.locator('.w-feeds .fd-i').last().click();
+  await expect(page.locator('#toast')).toContainText('Opening on the PC');
+  await expect(page.locator('.w-feeds .fd-i').last()).toHaveClass(/\bread\b/);
+  await expect(page.locator('.w-feeds .fd-i.read')).toHaveCount(1);
+  expect(await page.locator('.w-feeds .fd-i').last().evaluate((el) => getComputedStyle(el).borderLeftColor)).toBe('rgba(0, 0, 0, 0)');
+  expect(await list.evaluate((el) => el.scrollTop)).toBe(bottom);
+
+  // it stays read after the panel reloads (kept on the phone)
+  await page.reload();
+  await expect(page.locator('.w-feeds .fd-i').last()).toHaveClass(/\bread\b/);
+
+  // in a Smart Stack, a vertical swipe over a list that scrolls scrolls it rather than changing the card
+  await layout(page, [{ ...widget('stack', { widgets: [{ type: 'feeds', options: { title: 'News' } }, { type: 'clock' }] }), h: 2 }]);
+  await expect(page.locator('.stack-item.active .w-feeds .fd-i')).toHaveCount(6);
+  await page.locator('.stack-item.active .fd-list').evaluate((el) => {
+    const mk = (type, x, y) => {
+      const e = new Event(type, { bubbles: true, cancelable: true });
+      const touch = { clientX: x, clientY: y };
+      e.touches = type === 'touchstart' ? [touch] : [];
+      e.changedTouches = [touch];
+      return e;
+    };
+    el.firstElementChild.dispatchEvent(mk('touchstart', 100, 200));
+    el.firstElementChild.dispatchEvent(mk('touchend', 100, 100));
+  });
+  await expect(page.locator('.stack-item.active .w-feeds')).toHaveCount(1);
+
+  // headlines over two lines
+  await layout(page, [widget('feeds', { title: 'News', lines: '2' })]);
+  const title = page.locator('.w-feeds .fd-t').first();
+  await expect(page.locator('.w-feeds .fd-list.wrap')).toHaveCount(1);
+  expect(await title.evaluate((el) => [getComputedStyle(el).whiteSpace, getComputedStyle(el).webkitLineClamp])).toEqual(['normal', '2']);
+});
+
 // Each News feeds widget follows its own "open" option, and the demo, like the agent, ignores disabled pages.
 test('news feeds open only from a widget whose own option allows it', async ({ page }) => {
   await layout(page, [
@@ -570,4 +749,30 @@ test('a photo frame on a hidden Smart Stack card fetches nothing', async ({ page
   expect(await page.evaluate(() => window.__photoFetches)).toBe(0);
   await page.getByRole('button', { name: 'photos', exact: true }).click();
   await expect(page.locator('.stack-item.active .w-photos .pf-img.on')).toHaveCount(1);
+});
+
+// #258: the Trackpad widget used the native bridge without importing it, so with mouse control on it threw while
+// building in the phone app; the catalogue test builds it with control off and never got that far.
+test('the Trackpad widget sends a tap through the phone bridge when mouse control is on', async ({ browser, baseURL }) => {
+  const ctx = await browser.newContext({ baseURL, viewport: { width: 780, height: 360 } });
+  await ctx.addInitScript(() => {
+    window.__phoneboxKey = 'pb-key-test';
+    window.__tp = [];
+    window.Android = {
+      battery: () => '{}', version: () => 'test', haptic() {}, buzz() {}, setBrightness() {}, setVolumeKeys() {}, is24Hour: () => true,
+      transport: () => 'usb', pcs: () => '[]',
+      trackpad: (key, type) => { if (key === 'pb-key-test') window.__tp.push(type); },
+    };
+  });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await layout(page, [widget('trackpad', { control: true, scrollBar: 'none' })]);
+
+  const pad = page.locator('.deck-trackpad');
+  await expect(pad).not.toHaveClass(/is-disabled/);
+  await pad.click();
+  await expect.poll(() => page.evaluate(() => window.__tp)).toContain('click');
+  expect(errors).toEqual([]);
+  await ctx.close();
 });

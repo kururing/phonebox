@@ -153,5 +153,84 @@ public sealed class MonitorAuditTests : IDisposable
         Assert.Equal(40, shown.Limits.Single(l => l.Label == "Weekly").Percent);
     }
 
+    [Fact]
+    public void CodexRolloutsUnderOneMegabyteDoNotDropFirstLineTurnContextOrRateLimits()
+    {
+        var readUsage = typeof(QuotaMonitor).GetMethod("ReadCodexUsage", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var lastLineWith = typeof(QuotaMonitor).GetMethod("LastLineWith", BindingFlags.Static | BindingFlags.NonPublic)!;
+
+        var usageFile = Path.Combine(_dir, "rollout-line0.jsonl");
+        File.WriteAllText(usageFile, string.Join('\n',
+            """{"type":"turn_context","payload":{"model":"gpt-5","effort":"high"}}""",
+            """{"timestamp":"2026-11-17T10:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":1200}}}}""") + "\n", Encoding.UTF8);
+
+        var usage = (CodexUsage?)readUsage.Invoke(null, [usageFile]);
+        Assert.NotNull(usage);
+        Assert.Equal("gpt-5", usage!.Model);
+        Assert.Equal("high", usage.Effort);
+
+        var rateFile = Path.Combine(_dir, "rollout-rate0.jsonl");
+        File.WriteAllText(rateFile, """{"payload":{"rate_limits":{"primary":{"used_percent":42,"window_minutes":300}}}}""" + "\n", Encoding.UTF8);
+        Assert.NotNull(lastLineWith.Invoke(null, [rateFile, "\"rate_limits\""]));
+    }
+
+    [Fact]
+    public void ProcessDetailToleratesDuplicateSessionPidsAndLocksAgentProcess()
+    {
+        var selfProc = System.Diagnostics.Process.GetCurrentProcess();
+        var pid = selfProc.Id;
+        var sessionsField = typeof(SessionMonitor).GetField("_sessions", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var sessionMon = new SessionMonitor(NullLogger<SessionMonitor>.Instance);
+        sessionsField.SetValue(sessionMon, new[]
+        {
+            new AgentSession("claude:s1", "claude", "older", "demo", "idle", null, 1000, 500, Pid: pid),
+            new AgentSession("claude:s2", "claude", "newest", "demo", "busy", null, 5000, 500, Pid: pid),
+        });
+        var procMon = new ProcessMonitor(NullLogger<ProcessMonitor>.Instance, sessionMon);
+        var detail = procMon.Detail(selfProc.ProcessName);
+        var inst = Assert.Single(detail.Instances, i => i.Pid == pid);
+        Assert.Equal("newest", inst.Session);
+        Assert.True(inst.Locked);
+        // the group lock depends on every same-name process (another test host may be running), so only check that it
+        // follows the instances it was computed from
+        if (detail.Instances.All(i => i.Locked)) Assert.True(detail.Locked);
+    }
+
+    [Fact]
+    public void CodexProjectComesFromALongOrBomPrefixedFirstRecordAndWaitsForAnIncompleteOne()
+    {
+        var readCwd = typeof(SessionMonitor).GetMethod("ReadCodexCwd", BindingFlags.Static | BindingFlags.NonPublic)!;
+        string Cwd(byte[] content)
+        {
+            var file = Path.Combine(_dir, $"rollout-{Guid.NewGuid():N}.jsonl");
+            File.WriteAllBytes(file, content);
+            return (string)readCwd.Invoke(null, [file])!;
+        }
+        static byte[] Utf8(string s) => Encoding.UTF8.GetBytes(s);
+        const string Meta = """{"type":"session_meta","payload":{"cwd":"/work/demo","instructions":"__PAD__"}}""";
+
+        // base instructions and tool definitions can make the first record longer than 64 KiB
+        var longMeta = Meta.Replace("__PAD__", new string('x', 70 * 1024));
+        Assert.Equal("/work/demo", Cwd(Utf8(longMeta + "\n{\"type\":\"event_msg\"}\n")));
+        Assert.Equal("/work/demo", Cwd([0xEF, 0xBB, 0xBF, .. Utf8(Meta.Replace("__PAD__", "") + "\n")]));
+        // still being written: nothing yet, so the next poll reads it again
+        Assert.Equal("", Cwd(Utf8(longMeta)));
+    }
+
+    [Fact]
+    public void ColdProcessIconDoesNotCacheNullAndShortenArgsHandlesTabSeparators()
+    {
+        var procMon = new ProcessMonitor(NullLogger<ProcessMonitor>.Instance, new SessionMonitor(NullLogger<SessionMonitor>.Instance));
+        const string missing = "missing-proc-f390";
+        Assert.Null(procMon.Icon(missing));
+        var iconsField = typeof(ProcessMonitor).GetField("_icons", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var iconsDict = (System.Collections.Concurrent.ConcurrentDictionary<string, byte[]?>)iconsField.GetValue(procMon)!;
+        Assert.False(iconsDict.ContainsKey(missing));
+
+        Assert.Equal("--daemon", ProcessMonitor.ShortenArgs("tool.exe\t--daemon"));
+        Assert.Equal("--port 9000", ProcessMonitor.ShortenArgs("\"C:\\Program Files\\My App\\tool.exe\"\t--port 9000"));
+        Assert.Null(ProcessMonitor.ShortenArgs("tool.exe"));
+    }
+
     // ------------------------------------------------------------------ 5. Windows time zone names without ICU (run with DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1)
 }

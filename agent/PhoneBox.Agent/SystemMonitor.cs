@@ -35,6 +35,7 @@ public sealed partial class SystemMonitor(ILogger<SystemMonitor> log, ConfigStor
     // GPU sources, highest priority first: nvidia-smi, LibreHardwareMonitor, the OS (D3DKMT + counters / sysfs / ioreg)
     private volatile IReadOnlyList<GpuInfo>? _nvidia, _lhmGpus, _osGpus;
     private double? _cpuTemp;
+    private double? _appleGpuTemp; // macOS: the GPU's temperature from the SMC, added to the ioreg GPU
     private IReadOnlyList<DiskInfo> _disks = [];
 
     public PcSnapshot? Snapshot() => _snap;
@@ -171,7 +172,7 @@ public sealed partial class SystemMonitor(ILogger<SystemMonitor> log, ConfigStor
                 {
                     var text = await p.StandardOutput.ReadToEndAsync(cts.Token);
                     await p.WaitForExitAsync(cts.Token);
-                    _osGpus = ParseAppleGpu(text, Memory().Total) is { } g ? [g] : null;
+                    _osGpus = ParseAppleGpu(text, Memory().Total) is { } g ? [g with { Temp = _appleGpuTemp }] : null;
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { try { p.Kill(); } catch { } _osGpus = null; }
             }
@@ -180,6 +181,41 @@ public sealed partial class SystemMonitor(ILogger<SystemMonitor> log, ConfigStor
             await Task.Delay(TimeSpan.FromSeconds(2), ct);
         }
     }
+
+#if !WINDOWS
+    /// <summary>
+    /// macOS: CPU and GPU temperature from the SMC every 2 s. Without an SMC or its temperature keys (Intel, macOS 13
+    /// and older) it stops and both stay null; a failed read clears them and opens the SMC again 30 s later.
+    /// </summary>
+    private async Task AppleTempLoop(CancellationToken ct)
+    {
+        AppleSmc? smc = null;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    smc ??= AppleSmc.Open();
+                    if (smc is null) { log.LogInformation("CPU temperature: no SMC temperature sensors on this Mac"); return; }
+                    (_cpuTemp, _appleGpuTemp) = smc.Read();
+                    await Task.Delay(2000, ct);
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex)
+                {
+                    log.LogDebug("apple-smc: {Msg}", ex.Message);
+                    (_cpuTemp, _appleGpuTemp) = (null, null);
+                    smc?.Dispose();
+                    smc = null;
+                    await Task.Delay(30_000, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally { smc?.Dispose(); }
+    }
+#endif
 
     /// <summary>Reads the GPU from the ioreg text. The memory is unified: the total is the machine's RAM, the used part what the GPU holds.</summary>
     internal static GpuInfo? ParseAppleGpu(string ioreg, double totalMemoryBytes)
@@ -196,12 +232,14 @@ public sealed partial class SystemMonitor(ILogger<SystemMonitor> log, ConfigStor
             Vendor: "apple", Source: "ioreg", Integrated: true);
     }
 
-    // CPU temperature: Windows from LibreHardwareMonitor's web server (port 8085), when it is running; Linux from hwmon.
-    // The same LibreHardwareMonitor answer carries the GPU sensors too (hot spot, board power, fan, clocks).
+    // CPU temperature: Windows from LibreHardwareMonitor's web server (port 8085), when it is running; Linux from hwmon;
+    // macOS on Apple silicon from the SMC (CPU and GPU). The same LibreHardwareMonitor answer carries the GPU sensors
+    // too (hot spot, board power, fan, clocks).
     private async Task CpuTempLoop(CancellationToken ct)
     {
 #if !WINDOWS
         _lhmGpus = null; // LibreHardwareMonitor is Windows only
+        if (OperatingSystem.IsMacOS()) { await AppleTempLoop(ct); return; }
         while (!ct.IsCancellationRequested)
         {
             _cpuTemp = UnixSystem.CpuTemp();
@@ -210,8 +248,16 @@ public sealed partial class SystemMonitor(ILogger<SystemMonitor> log, ConfigStor
         return;
 #else
 #pragma warning disable CS0162
+        var sensors = new WindowsCpuSensors(log, ct);
+        sensors.Start();
         while (!ct.IsCancellationRequested)
         {
+            if (sensors.Read() is { } integrated)
+            {
+                _cpuTemp = integrated;
+                await Task.Delay(2000, ct);
+                continue;
+            }
             var delay = TimeSpan.FromSeconds(2);
             try
             {
@@ -229,7 +275,7 @@ public sealed partial class SystemMonitor(ILogger<SystemMonitor> log, ConfigStor
             {
                 _cpuTemp = null;
                 _lhmGpus = null;
-                delay = TimeSpan.FromSeconds(30);
+                delay = TimeSpan.FromSeconds(2);
             }
             await Task.Delay(delay, ct);
         }
@@ -249,8 +295,10 @@ public sealed partial class SystemMonitor(ILogger<SystemMonitor> log, ConfigStor
         double? hottest = null;
         void Visit(JsonElement node, bool inCpu)
         {
+            // a null or non-object entry is skipped, not allowed to throw away the readings after it
+            if (node.ValueKind != JsonValueKind.Object) return;
             inCpu = inCpu || IsCpuNode(node);
-            if (inCpu && node.TryGetProperty("Text", out var text) && text.GetString() is { } name && CoreSensor().IsMatch(name)
+            if (inCpu && StrProp(node, "Text") is { } name && CoreSensor().IsMatch(name)
                 && ReadCelsius(node) is { } t && (hottest is null || t > hottest))
                 hottest = t;
             if (node.TryGetProperty("Children", out var kids) && kids.ValueKind == JsonValueKind.Array)
@@ -260,18 +308,23 @@ public sealed partial class SystemMonitor(ILogger<SystemMonitor> log, ConfigStor
         return hottest;
     }
 
-    private static bool IsCpuNode(JsonElement node) =>
-        (node.TryGetProperty("HardwareId", out var id) && id.GetString() is { } hw
-            && (hw.StartsWith("/intelcpu/", StringComparison.OrdinalIgnoreCase) || hw.StartsWith("/amdcpu/", StringComparison.OrdinalIgnoreCase)))
-        || (node.TryGetProperty("ImageURL", out var img) && img.GetString() is { } url && url.EndsWith("/cpu.png", StringComparison.OrdinalIgnoreCase));
+    /// <summary>A string property of an object node; null when it is missing or not a string.</summary>
+    private static string? StrProp(JsonElement node, string name) =>
+        node.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-    /// <summary>A temperature value such as "54,0 °C"; load and clock sensors share the core names but have no °.</summary>
+    private static bool IsCpuNode(JsonElement node) =>
+        (StrProp(node, "HardwareId") is { } hw
+            && (hw.StartsWith("/intelcpu/", StringComparison.OrdinalIgnoreCase) || hw.StartsWith("/amdcpu/", StringComparison.OrdinalIgnoreCase)))
+        || (StrProp(node, "ImageURL") is { } url && url.EndsWith("/cpu.png", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>A temperature value such as "54,0 °C" or "140.0 °F"; load and clock sensors share the core names but have no °.</summary>
     private static double? ReadCelsius(JsonElement node)
     {
-        if (!node.TryGetProperty("Value", out var val) || val.GetString() is not { } s || !s.Contains('°')) return null;
-        if (node.TryGetProperty("Type", out var type) && type.GetString() is { } ty && ty != "Temperature") return null;
-        var num = s.Split(' ')[0].Replace(',', '.');
-        return double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var t) ? t : null;
+        if (!node.TryGetProperty("Value", out var val) || val.ValueKind != JsonValueKind.String || val.GetString() is not { } s || !s.Contains('°')) return null;
+        // an older reply has no type; one that names a type must name a temperature
+        if (node.TryGetProperty("Type", out var type) && type.ValueKind != JsonValueKind.Null
+            && (type.ValueKind != JsonValueKind.String || type.GetString() != "Temperature")) return null;
+        return Gpus.ParseLhmValue(s, "Temperature") is { Kind: "temp" } parsed ? parsed.Value : null;
     }
 
     [System.Text.RegularExpressions.GeneratedRegex(@"^(?:CPU )?Core #\d+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
@@ -279,13 +332,11 @@ public sealed partial class SystemMonitor(ILogger<SystemMonitor> log, ConfigStor
 
     private static double? FindTemp(JsonElement node, string[] names)
     {
-        if (node.TryGetProperty("Text", out var text) && names.Contains(text.GetString())
-            && node.TryGetProperty("Value", out var val) && val.GetString() is { } s && s.Contains('°'))
-        {
-            var num = s.Split(' ')[0].Replace(',', '.');
-            if (double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var t)) return t;
-        }
-        if (node.TryGetProperty("Children", out var kids))
+        if (node.ValueKind != JsonValueKind.Object) return null;
+        if (node.TryGetProperty("Text", out var text) && text.ValueKind == JsonValueKind.String && names.Contains(text.GetString())
+            && ReadCelsius(node) is { } temp)
+            return temp;
+        if (node.TryGetProperty("Children", out var kids) && kids.ValueKind == JsonValueKind.Array)
             foreach (var k in kids.EnumerateArray())
                 if (FindTemp(k, names) is { } t) return t;
         return null;

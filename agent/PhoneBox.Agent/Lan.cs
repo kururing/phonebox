@@ -13,14 +13,15 @@ namespace PhoneBox.Agent;
 /// </summary>
 public static class Lan
 {
-    private static readonly string CertPath = Path.Combine(AppPaths.ConfigDir, "lan-cert.pfx");
-
     /// <summary>Loads the agent's TLS certificate, creating it on first use.</summary>
-    public static X509Certificate2 Certificate()
+    public static X509Certificate2 Certificate(string? configDir = null)
     {
-        if (File.Exists(CertPath))
+        var dir = string.IsNullOrEmpty(configDir) ? AppPaths.ConfigDir : configDir;
+        var certPath = Path.Combine(dir, "lan-cert.pfx");
+        if (File.Exists(certPath))
         {
-            try { return X509CertificateLoader.LoadPkcs12FromFile(CertPath, null, X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable); }
+            AppPaths.RestrictToOwner(certPath);
+            try { return X509CertificateLoader.LoadPkcs12FromFile(certPath, null, X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable); }
             catch { /* corrupt: recreate below */ }
         }
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -29,10 +30,10 @@ public static class Lan
         req.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, false));
         req.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false)); // server auth
         using var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(20));
-        Directory.CreateDirectory(AppPaths.ConfigDir);
-        File.WriteAllBytes(CertPath, cert.Export(X509ContentType.Pfx));
+        Directory.CreateDirectory(dir);
+        using (var dst = AppPaths.CreatePrivate(certPath)) dst.Write(cert.Export(X509ContentType.Pfx));
         // Re-import so Windows TLS (SChannel) gets a persisted key.
-        return X509CertificateLoader.LoadPkcs12FromFile(CertPath, null, X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
+        return X509CertificateLoader.LoadPkcs12FromFile(certPath, null, X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.Exportable);
     }
 
     public static string Fingerprint(X509Certificate2 cert) => Convert.ToHexString(SHA256.HashData(cert.RawData)).ToLowerInvariant();
@@ -91,8 +92,8 @@ public static class Lan
         || path.StartsWithSegments("/api/state") || path.StartsWithSegments("/api/config") || path.StartsWithSegments("/api/art")
         || path.StartsWithSegments("/api/media") || path.StartsWithSegments("/api/volume") || path.StartsWithSegments("/api/quotas")
         || path.StartsWithSegments("/api/work") || path.StartsWithSegments("/api/procs") || path.StartsWithSegments("/api/run")
-        || path.StartsWithSegments("/api/apps") || path.StartsWithSegments("/api/console") || path == "/api/dictate"
-        || path.StartsWithSegments("/api/widget") || path.StartsWithSegments("/api/calendar") || path.StartsWithSegments("/api/feeds") || path.StartsWithSegments("/api/photos") || path == "/api/spectrum" || path.StartsWithSegments("/api/docker") || path.StartsWithSegments("/api/obs") || path.StartsWithSegments("/api/discord") || path.StartsWithSegments("/api/batteries") || path.StartsWithSegments("/api/ha/states") || path.StartsWithSegments("/api/ha/toggle") || path.StartsWithSegments("/api/approvals") || path.StartsWithSegments("/api/rules/pause") || path.StartsWithSegments("/api/phone/battery") || path.StartsWithSegments("/api/stream") || path == "/api/pair/claim" || IsWebhook(path);
+        || path.StartsWithSegments("/api/apps") || path.StartsWithSegments("/api/shortcuts/icon") || path.StartsWithSegments("/api/console") || path == "/api/dictate"
+        || path.StartsWithSegments("/api/widget") || path.StartsWithSegments("/api/calendar") || path.StartsWithSegments("/api/feeds") || path.StartsWithSegments("/api/photos") || path == "/api/camera" || path == "/api/spectrum" || path.StartsWithSegments("/api/docker") || path.StartsWithSegments("/api/obs") || path.StartsWithSegments("/api/discord") || path.StartsWithSegments("/api/batteries") || path.StartsWithSegments("/api/ha/states") || path.StartsWithSegments("/api/ha/toggle") || path.StartsWithSegments("/api/approvals") || path.StartsWithSegments("/api/rules/pause") || path.StartsWithSegments("/api/phone/battery") || path.StartsWithSegments("/api/stream") || path.StartsWithSegments("/api/trackpad") || path == "/api/pair/claim" || IsWebhook(path);
 
     /// <summary>
     /// The one Wi-Fi path that needs no key: a phone pairing without USB trades a one-time code for it (see
@@ -104,6 +105,22 @@ public static class Lan
     public static bool IsWebhook(PathString path) =>
         path.StartsWithSegments("/api/push") || path.StartsWithSegments("/api/notify")
         || path.StartsWithSegments("/api/goto") || path.StartsWithSegments("/api/refresh");
+
+    internal enum LanAccess { Denied, Phone, Webhook, PairingClaim }
+
+    internal static LanAccess AuthorizeRequest(LanConfig lan, string method, PathString path, string origin, string? authorization, string? queryToken)
+    {
+        if (!lan.Enabled || origin != "" || !AllowedOverLan(path)) return LanAccess.Denied;
+        // A hand-edited config can give both keys the same value. Every webhook sender then holds the phone key too,
+        // and the agent cannot tell them apart, so that value is not trusted as a phone key until one of them changes.
+        var sharedKey = string.Equals(lan.Token, lan.WebhookToken, StringComparison.Ordinal);
+        if (!sharedKey && !string.IsNullOrEmpty(lan.Token) && Matches(authorization, lan.Token)) return LanAccess.Phone;
+        if (IsWebhook(path) && !string.IsNullOrEmpty(lan.WebhookToken)
+            && (Matches(authorization, lan.WebhookToken) || MatchesQuery(queryToken, lan.WebhookToken)))
+            return LanAccess.Webhook;
+        if (IsPairingClaim(method, path)) return LanAccess.PairingClaim;
+        return LanAccess.Denied;
+    }
 
     public static IPAddress Any => IPAddress.Any;
 }

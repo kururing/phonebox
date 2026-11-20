@@ -96,8 +96,12 @@ curl -fsSL https://raw.githubusercontent.com/ersinkoc/phonebox/main/setup.sh | b
 - **Linux USB permissions**: if `adb devices` shows `no permissions`, adb also needs udev rules. Install
   `android-sdk-platform-tools-common` on Debian/Ubuntu or `android-udev` on Arch. Some systems also need the
   `plugdev` group (`sudo usermod -aG plugdev $USER`, then log out and in). Setup points this out when it happens.
-- **On macOS**, the agent is signed ad hoc, not with an Apple Developer ID. The first time, macOS may ask whether
-  it may control Music or Spotify (for Now Playing), or accept incoming connections (with Wi-Fi on).
+- **On macOS**, the agent is signed with PhoneBox's own certificate, not an Apple Developer ID. The first time,
+  macOS may ask whether it may control Music or Spotify (for Now Playing), or accept incoming connections (with Wi-Fi
+  on). Shortcuts that press keys need *System Settings › Privacy & Security › Accessibility* for PhoneBoxAgent; it
+  carries over to later updates. Before 0.9.22 the agent was signed ad hoc, and macOS dropped the permission with every
+  update, so after updating from an older version allow it once more: remove PhoneBoxAgent there with *−* and add it
+  again, even if it is listed and switched on ([#269](https://github.com/ersinkoc/phonebox/issues/269)).
 - **Windows USB drivers**: if the phone never appears, Windows may need its USB driver. Google phones use the
   Google USB Driver; other brands have one on their support site.
 - **Scoop users**: setup stops if PhoneBox is installed with Scoop, so two copies don't fight over the same port.
@@ -109,7 +113,7 @@ curl -fsSL https://raw.githubusercontent.com/ersinkoc/phonebox/main/setup.sh | b
 ### 2. Connect the phone
 
 - **Over USB** (recommended): it wakes the phone on plug-in, updates the app and falls back to USB when Wi-Fi drops.
-  The phone needs Android 7.0 or later with USB debugging turned on:
+  The phone needs Android 5.0 or later (Android 6 or later recommended) with USB debugging turned on:
   1. *Settings › About phone*: tap *Build number* seven times.
   2. *Developer options*: turn on *USB debugging*. On Xiaomi, Redmi and POCO, also turn on *Install via USB*.
   3. Plug the phone in with a data cable and answer *Allow USB debugging?* with *Allow*.
@@ -151,6 +155,20 @@ The settings are at <http://127.0.0.1:8765>, on Windows also from the tray icon.
   ./scripts/install.sh --apk --autostart  # systemd user service (Linux) or launchd agent (macOS)
   ```
 
+### Stop and start the agent
+
+On Windows, use **Quit** in the tray menu; with **Start with Windows** on, it starts again at the next sign-in.
+On Linux, setup installs a systemd user service named `phonebox` (no sudo needed):
+
+```sh
+systemctl --user stop phonebox            # off until the next login; start / restart / status work the same way
+systemctl --user disable --now phonebox   # off, and no longer started at login (enable --now turns both back on)
+```
+
+On macOS, `launchctl unload ~/Library/LaunchAgents/net.oxog.phonebox.agent.plist` stops it, and `launchctl load`
+with the same path starts it again. While the agent is off, the phone shows that it is offline and reconnects by
+itself once the agent runs again.
+
 ### Uninstall
 
 ```powershell
@@ -172,7 +190,7 @@ deletes the settings, and `-Apk` / `--apk` removes the app from the connected ph
 |---|---|---|---|
 | CPU, RAM, network, disks, ping | ✓ | ✓ | ✓ |
 | CPU temperature | LibreHardwareMonitor | ✓ (hwmon) | — |
-| GPU load, VRAM, temperature | Any vendor (Windows GPU counters); NVIDIA adds power, fan and clocks (`nvidia-smi`), AMD / Intel add them with LibreHardwareMonitor | NVIDIA (`nvidia-smi`), AMD (`amdgpu` sysfs), Intel (clock) | Apple silicon (`ioreg`) |
+| GPU load, VRAM, temperature | Any vendor (Windows GPU counters); NVIDIA adds power, fan and clocks (`nvidia-smi`), AMD / Intel add them with LibreHardwareMonitor | NVIDIA (`nvidia-smi`), AMD (`amdgpu` sysfs), Intel (`i915` / `xe`: load and clock) | Apple silicon (`ioreg`) |
 | Now playing + controls | ✓ (any app) | ✓ (MPRIS via `playerctl`) | System media, including browser video, with `nowplaying-cli`; Spotify and Music fallback |
 | Volume | ✓ | ✓ (`wpctl` / `pactl`) | ✓ |
 | Processes, end one / all | ✓ | ✓ (your own) | ✓ (your own) |
@@ -194,7 +212,16 @@ watts, fan speed and clocks. Without it Windows still reports any GPU's load, VR
 cards get the full set from `nvidia-smi`. A PC with two GPUs (a graphics card and the processor's integrated one) shows
 both: the card is the main GPU, the GPU details widget can show either.
 
-#### LibreHardwareMonitor on Windows
+#### Integrated CPU temperature on Windows
+
+PhoneBox includes LibreHardwareMonitorLib and starts a CPU-only background worker when the agent opens. Windows
+may ask for administrator approval to read hardware sensors. The main agent stays unelevated: the worker does not
+start a web server, does not accept commands, sends readings over a pipe restricted to the current user, and exits
+when PhoneBox closes. No separate LibreHardwareMonitor application or web server is required for CPU temperature.
+If administrator approval is cancelled or the hardware driver is unavailable, temperature stays unavailable; a
+running LibreHardwareMonitor web server remains supported as a fallback.
+
+#### Optional LibreHardwareMonitor web server on Windows
 
 PhoneBox reads LibreHardwareMonitor's sensor list from `http://127.0.0.1:8085/data.json` whenever it is there; there
 is nothing to turn on in PhoneBox.
@@ -214,8 +241,15 @@ and may differ slightly in older ones.
 
 ## Wi-Fi & Tailscale
 
-Turn on **Settings › General › Wi-Fi & Tailscale** and restart the agent when asked. Then pair the phone in one
-of two ways:
+Wi-Fi is off by default. To turn it on:
+
+1. Open the settings page on the PC: click the tray icon, or go to `http://127.0.0.1:8765` in a browser.
+2. In **General**, scroll down to **Wi-Fi & Tailscale** and turn on **Let the phone connect without the USB cable**.
+3. Click **Save**, then **Restart to apply** at the top of the page. The line next to **Pair a phone over Wi-Fi**
+   says "Listening on port 8766" once it works.
+4. Allow PhoneBox through the firewall when Windows asks.
+
+Then pair the phone in one of two ways:
 
 - **Without a cable:** click **Pair a phone over Wi-Fi**. The window shows a QR code that downloads the app and one
   that pairs. Scan the second with the phone's camera, open the link and tap **Open in PhoneBox**; the phone asks you
@@ -267,8 +301,17 @@ cable, or a port straight on the computer instead of a hub or a front-panel port
 
 <details><summary><b>Some widgets show "—" or "No data".</b></summary>
 
-GPU values come from Windows itself (the temperature, as in Task Manager, needs Windows 10 2004 or later and a WDDM 2.4 driver), `nvidia-smi` for NVIDIA cards, `amdgpu` sysfs on Linux, or IORegistry on Apple silicon. The GPU hot spot and an AMD or Intel card's watts, fan and clocks need LibreHardwareMonitor. CPU temperature needs LibreHardwareMonitor's web server on port 8085,
+GPU values come from Windows itself (the temperature, as in Task Manager, needs Windows 10 2004 or later and a WDDM 2.4 driver), `nvidia-smi` for NVIDIA cards, `amdgpu` sysfs on Linux, an Intel card's DRM usage counters on Linux, or IORegistry on Apple Silicon. An Intel card's load on Linux needs a kernel whose driver exposes busy counters in fdinfo (`i915` from kernel 5.19, `xe`); a card whose programs never report them shows no load. A program that starts using the GPU is picked up within about 30 seconds and counts from the reading after that, and programs of other users are counted only when Linux lets the agent read them (normally as root or with `CAP_SYS_PTRACE`). The GPU hot spot and an AMD or Intel card's watts, fan and clocks need LibreHardwareMonitor. CPU temperature needs LibreHardwareMonitor's web server on port 8085,
 GitHub needs `gh auth login`, quotas and sessions need Claude Code / Codex to have been used on this PC.
+</details>
+
+<details><summary><b>On Android 5 or 6, the weather says "Weather unavailable".</b></summary>
+
+The weather and air quality come straight from Open-Meteo over HTTPS, and Android before 7.1.1 doesn't trust the
+certificate authority its certificate chains to (Let's Encrypt's ISRG Root X1). Download `isrgrootx1.pem` from
+[letsencrypt.org/certificates](https://letsencrypt.org/certificates/), rename it to `isrgrootx1.crt`, and install it
+under **Settings › Security › Install from device storage**. The panel itself talks to the computer and is not
+affected. Thanks to [phongnguyen2277](https://github.com/phongnguyen2277) for finding this (#184).
 </details>
 
 <details><summary><b>I want the volume keys to change the phone's volume.</b></summary>

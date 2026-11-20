@@ -13,6 +13,7 @@
   <a href="docs/README.nl.md">Nederlands</a> ·
   <a href="docs/README.pl.md">Polski</a> ·
   <a href="docs/README.ru.md">Русский</a> ·
+  <a href="docs/README.el.md">Ελληνικά</a> ·
   <a href="docs/README.vi.md">Tiếng Việt</a> ·
   <a href="docs/README.zh.md">中文 (简体)</a>
 </p>
@@ -31,7 +32,7 @@ Windows, Linux and macOS. No root, PhoneBox account or cloud service required.</
   <a href="https://github.com/ersinkoc/phonebox/actions/workflows/build.yml"><img src="https://github.com/ersinkoc/phonebox/actions/workflows/build.yml/badge.svg" alt="Build status"></a>
   <a href="https://github.com/ersinkoc/phonebox/releases/latest"><img src="https://img.shields.io/github/v/release/ersinkoc/phonebox?label=release" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/Windows%20%C2%B7%20Linux%20%C2%B7%20macOS-.NET%2010-512bd4" alt="Windows, Linux, macOS; .NET 10">
-  <img src="https://img.shields.io/badge/Android-7%2B-3ddc84" alt="Android 7+">
+  <img src="https://img.shields.io/badge/Android-5%2B-3ddc84" alt="Android 5+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
 </p>
 
@@ -39,7 +40,7 @@ Windows, Linux and macOS. No root, PhoneBox account or cloud service required.</
 <sub>Example layouts with demo data.</sub></p>
 
 PhoneBox pairs a full-screen **Android app** with a small **desktop agent**. Build your panel in a browser-based
-visual editor: **122 widgets**, **30 templates**, multiple pages and a live preview. Connect several phones with
+visual editor: **124 widgets**, **30 templates**, multiple pages and a live preview. Connect several phones with
 their own layouts, or switch one phone between paired computers.
 
 ## What you can do
@@ -61,7 +62,7 @@ and a cost overview.
 
 ## Quick start
 
-You need an **Android 7+ phone** and a supported computer. USB uses a data cable and USB debugging; Wi-Fi pairing
+You need an **Android 5+ phone** (Android 6 or later recommended) and a supported computer. USB uses a data cable and USB debugging; Wi-Fi pairing
 works without either. Release agents include .NET, so you do not need to install the runtime.
 
 ### 1. Install the desktop agent
@@ -93,8 +94,11 @@ The [installation guide](docs/SETUP.md) covers options, dependencies, install pa
 
 | USB | Wi-Fi only |
 |---|---|
-| Enable **Developer options → USB debugging**, connect a data cable and accept the phone's authorization prompt. Let setup install the app, or use **Settings → General → Install the phone app**. | Install the APK from the [latest release](https://github.com/ersinkoc/phonebox/releases/latest). Enable **Settings → General → Wi-Fi & Tailscale**, restart the agent when asked, then choose **Pair a phone over Wi-Fi**. Scan the pairing QR code and confirm the matching check code. |
+| Enable **Developer options → USB debugging**, connect a data cable and accept the phone's authorization prompt. Let setup install the app, or use **Settings → General → Install the phone app**. | Install the APK from the [latest release](https://github.com/ersinkoc/phonebox/releases/latest). Wi-Fi is off by default: open the settings page (tray icon, or `http://127.0.0.1:8765`), turn on **General → Wi-Fi & Tailscale → Let the phone connect without the USB cable**, click **Save**, then **Restart to apply** at the top. Choose **Pair a phone over Wi-Fi**, scan the pairing QR code and confirm the matching check code. |
 | Wakes and opens the panel on connection; supports app updates over adb. | No adb or developer options needed; install app updates manually unless you later configure USB. |
+
+The phone app is not in any app store; it comes only from this repository's releases. It runs on Android 5.0 and
+newer; there is no iOS version.
 
 For automatic USB/Wi-Fi fallback, enable Wi-Fi and connect the phone over USB once.
 [Connection details and Tailscale setup →](docs/SETUP.md#wi-fi--tailscale)
@@ -169,7 +173,8 @@ The [UMIDIGI BISON extras](extras/umidigi-bison) contain the reversible, no-root
 
 ## Security & privacy
 
-The desktop settings server listens on `127.0.0.1:8765`; USB reaches it through `adb reverse`.
+The desktop settings server listens on `127.0.0.1:8765`. USB reaches the agent through `adb reverse` on a loopback
+port of its own, over TLS pinned like Wi-Fi, with a key the phone app makes and the agent reads over adb.
 Optional Wi-Fi uses HTTPS on port 8766 with a pinned certificate and a paired key. Settings and pairing endpoints
 stay local. The phone requests configured actions by ID; commands and integration credentials stay on the computer.
 
@@ -183,7 +188,7 @@ Read the [security details](docs/GUIDE.md#security--privacy). To report a vulner
 
 The agent uses **.NET 10**; the Android app uses **Kotlin and a WebView** with plain JavaScript widgets.
 For Android builds, install **JDK 17** and **Android SDK Platform 35** (the SDK the app is built with; the app itself
-runs on Android 7.0, API 24, and later).
+runs on Android 5.0, API 21, and later).
 Preview the panel and editor from source with Python 3, using simulated data:
 
 ```sh

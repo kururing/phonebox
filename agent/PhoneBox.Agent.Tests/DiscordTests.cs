@@ -137,12 +137,12 @@ public sealed class DiscordTests : IDisposable
         return buf;
     }
 
-    private static async Task<(int Op, string Body)> ReadFrame(Stream s)
+    private static async Task<(int Op, string Body)> ReadFrame(Stream s, CancellationToken ct = default)
     {
         var head = new byte[8];
-        await s.ReadExactlyAsync(head);
+        await s.ReadExactlyAsync(head, ct);
         var body = new byte[BitConverter.ToInt32(head, 4)];
-        await s.ReadExactlyAsync(body);
+        await s.ReadExactlyAsync(body, ct);
         return (BitConverter.ToInt32(head, 0), Encoding.UTF8.GetString(body));
     }
 
@@ -284,5 +284,71 @@ public sealed class DiscordTests : IDisposable
         Assert.False(monitor.IsKnownImage("guild", "43", "icon1"));
         Assert.False(monitor.IsKnownImage("user", "42", "icon1"));        // a server id is not a user id
         Assert.Null(await monitor.ImageAsync("guild", "43", "icon1", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task TokenPathFollowsConfigDirectoryAndReadLoopSurvivesMalformedFramesAndClearsOnClose()
+    {
+        var monitor = Monitor(false);
+        Assert.Equal(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(_configPath))!, "discord-token.json"), monitor.TokenPath);
+
+        var (server, client) = await Pipe();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        // both ends scoped, and the deadline on every read: a missing PONG fails the test instead of hanging it
+        await using (server)
+        await using (client)
+        {
+            monitor.NotificationsOn = true;
+            monitor.PublishPoll(monitor.VoiceRevision, false, false, Polled());
+            var loop = monitor.ReadLoop(client, cts.Token);
+            await server.WriteAsync(Frame(1, "[1,2,3]"), cts.Token);
+            await server.WriteAsync(Frame(1, """{"nonce":123,"evt":456}"""), cts.Token);
+            await server.WriteAsync(Frame(3, """{"nonce":"still-alive"}"""), cts.Token);
+            var (op, body) = await ReadFrame(server, cts.Token);
+            Assert.Equal(4, op);
+            Assert.Contains("still-alive", body);
+
+            await server.DisposeAsync();
+            await loop.WaitAsync(cts.Token);
+            Assert.False(monitor.Snapshot().Connected);
+        }
+    }
+
+    // The last poll reply can arrive just before Discord closes the pipe; the poll that was waiting for it finishes
+    // after ReadLoop has cleared the snapshot and must not mark the closed session connected again.
+    [Fact]
+    public async Task A_poll_finishing_after_the_connection_closed_does_not_bring_it_back()
+    {
+        var monitor = Monitor(false);
+        var (server, client) = await Pipe();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using (server)
+        await using (client)
+        {
+            var loop = monitor.ReadLoop(client, cts.Token);
+            monitor.PublishPoll(monitor.VoiceRevision, false, false, Polled());
+            Assert.True(monitor.Snapshot().Connected);
+            var rev = monitor.VoiceRevision;                 // a poll reads its answers here...
+            await server.DisposeAsync();                     // ...Discord closes the pipe...
+            await loop.WaitAsync(cts.Token);
+            monitor.PublishPoll(rev, false, false, Polled()); // ...and the poll publishes what it read
+            Assert.False(monitor.Snapshot().Connected);
+        }
+    }
+
+    // --config with a settings file named like the login file: saving a login must not replace the settings.
+    [Fact]
+    public void The_login_file_never_is_the_settings_file()
+    {
+        var dir = Directory.CreateTempSubdirectory("phonebox-discord-token-").FullName;
+        try
+        {
+            var settings = Path.Combine(dir, "discord-token.json");
+            File.WriteAllText(settings, "{}");
+            var monitor = new DiscordMonitor(new ConfigStore(settings), NullLogger<DiscordMonitor>.Instance);
+            Assert.NotEqual(Path.GetFullPath(settings), Path.GetFullPath(monitor.TokenPath), StringComparer.OrdinalIgnoreCase);
+            Assert.Equal(dir, Path.GetDirectoryName(Path.GetFullPath(monitor.TokenPath)));
+        }
+        finally { Directory.Delete(dir, recursive: true); }
     }
 }

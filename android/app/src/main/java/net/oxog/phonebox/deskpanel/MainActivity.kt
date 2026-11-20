@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.AlertDialog
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ActivityInfo
@@ -23,6 +24,7 @@ import android.text.format.DateFormat
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -49,11 +51,14 @@ import org.json.JSONObject
 class MainActivity : Activity(), SensorEventListener {
 
     private lateinit var web: WebView
-    private val dictation by lazy { Dictation(this) { script -> web.evaluateJavascript(script, null) } }
+    // Set first in onDestroy: dictation and stream callbacks already queued on the UI thread then skip the destroyed WebView.
+    private var destroyed = false
+    private val dictation by lazy { Dictation(this) { script -> if (!destroyed) web.evaluateJavascript(script, null) } }
     private lateinit var link: AgentLink
     private lateinit var stream: AgentStream
+    @Volatile private var resumed = false
     @Volatile private var volumeKeysFlipPages = true
-    private val sensors by lazy { getSystemService(SensorManager::class.java) }
+    private val sensors by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager? }
     private var lastLux = -1f
     private var lastLuxAt = 0L
     private var near: Boolean? = null
@@ -71,7 +76,7 @@ class MainActivity : Activity(), SensorEventListener {
         link = AgentLink(this)
         stream = AgentStream(link) { event, data ->
             val js = "window.onAgentStream && window.onAgentStream(${JSONObject.quote(event)}, ${JSONObject.quote(data)})"
-            runOnUiThread { web.evaluateJavascript(js, null) }
+            runOnUiThread { if (!destroyed) web.evaluateJavascript(js, null) }
         }
 
         web = WebView(this)
@@ -132,12 +137,10 @@ class MainActivity : Activity(), SensorEventListener {
         val pairing = AgentLink.PairLink.parse(intent?.data) ?: return
         intent?.data = null // not again after a configuration change
         AlertDialog.Builder(this)
-            .setTitle("Pair with a computer?")
-            .setMessage("\"${pairing.pc}\" at ${pairing.hosts.joinToString()} (port ${pairing.port}).\n\n" +
-                "Check that the computer's pairing window shows the code ${pairing.check}.\n\n" +
-                "Continue only if you started pairing on that computer.")
-            .setPositiveButton("Pair") { _, _ -> pair(pairing) }
-            .setNegativeButton("Cancel", null)
+            .setTitle(getString(R.string.pair_title))
+            .setMessage(getString(R.string.pair_message, pairing.pc, pairing.hosts.joinToString(), pairing.port, pairing.check))
+            .setPositiveButton(getString(R.string.pair_positive)) { _, _ -> pair(pairing) }
+            .setNegativeButton(getString(R.string.pair_negative), null)
             .setOnDismissListener { hideSystemUi() }
             .show()
             .plainButtons()
@@ -149,17 +152,17 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun pair(pairing: AgentLink.PairLink) {
-        Toast.makeText(this, "Pairing with ${pairing.pc}...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, getString(R.string.pair_progress, pairing.pc), Toast.LENGTH_SHORT).show()
         Thread {
             val problem = link.claim(pairing)
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread // the pairing is stored; there is no window to show it in
                 if (problem == null) {
-                    Toast.makeText(this, "Paired with ${pairing.pc}", Toast.LENGTH_LONG).show()
-                    stream.stop(); stream.start(); web.reload()
+                    Toast.makeText(this, getString(R.string.pair_done, pairing.pc), Toast.LENGTH_LONG).show()
+                    stream.stop(); if (resumed) stream.start(); web.reload()
                 } else {
-                    AlertDialog.Builder(this).setTitle("Pairing did not work").setMessage(problem)
-                        .setPositiveButton("OK", null).setOnDismissListener { hideSystemUi() }.show().plainButtons()
+                    AlertDialog.Builder(this).setTitle(getString(R.string.pair_failed_title)).setMessage(problem.message(this))
+                        .setPositiveButton(getString(R.string.ok), null).setOnDismissListener { hideSystemUi() }.show().plainButtons()
                 }
             }
         }.start()
@@ -182,7 +185,8 @@ class MainActivity : Activity(), SensorEventListener {
         val ct = r.contentType ?: "application/octet-stream"
         val mime = ct.substringBefore(';').trim()
         val charset = if (ct.contains("charset=")) ct.substringAfter("charset=").trim() else null
-        return WebResourceResponse(mime, charset, r.code, if (r.code < 400) "OK" else "Error", NO_STORE, r.body)
+        val status = if (r.code in 100..599 && r.code !in 300..399) r.code else 502
+        return WebResourceResponse(mime, charset, status, if (status < 400) "OK" else "Error", NO_STORE, r.body)
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -226,7 +230,9 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
+        resumed = true
         web.onResume()
+        web.evaluateJavascript("window.onAppPause && window.onAppPause(false)", null) // the panel catches up at once
         stream.start()
         hideSystemUi()
         sensors?.getDefaultSensor(Sensor.TYPE_LIGHT)?.let { sensors?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
@@ -240,11 +246,27 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     override fun onPause() {
+        resumed = false
         dictation.cancel(0) // the microphone is never left open behind another app or a dark screen
         sensors?.unregisterListener(this)
         stream.stop()
+        // WebView.onPause() leaves JavaScript running: tell the panel to stop polling and refreshing while nobody sees it
+        web.evaluateJavascript("window.onAppPause && window.onAppPause(true)", null)
         web.onPause()
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        destroyed = true
+        resumed = false
+        dictation.cancel(0)
+        sensors?.unregisterListener(this)
+        stream.stop()
+        link.trackpadSocket.close()
+        link.close()
+        (web.parent as? ViewGroup)?.removeView(web) // a WebView must be detached before destroy()
+        web.destroy()
+        super.onDestroy()
     }
 
     /**
@@ -291,6 +313,17 @@ class MainActivity : Activity(), SensorEventListener {
     inner class Bridge {
         private fun ok(key: String) = key == bridgeKey
 
+        private val validTrackpadTypes = setOf("move", "click", "rightClick", "mousedown", "mouseup", "scroll", "hscroll")
+
+        @JavascriptInterface
+        fun trackpad(key: String, type: String, dx: Float, dy: Float, delta: Float) {
+            if (!ok(key) || type !in validTrackpadTypes) return
+            val cleanDx = if (dx.isFinite()) dx else 0f
+            val cleanDy = if (dy.isFinite()) dy else 0f
+            val cleanDelta = if (delta.isFinite()) delta else 0f
+            link.sendTrackpad(type, cleanDx, cleanDy, cleanDelta)
+        }
+
         /** Screen brightness 0..1; a negative value returns control to the system setting. */
         @JavascriptInterface
         fun setBrightness(key: String, value: Float) {
@@ -306,7 +339,7 @@ class MainActivity : Activity(), SensorEventListener {
         @JavascriptInterface
         fun haptic(key: String) {
             if (!ok(key)) return
-            val v = getSystemService(Vibrator::class.java) ?: return
+            val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator? ?: return
             if (!v.hasVibrator()) return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createOneShot(14, VibrationEffect.DEFAULT_AMPLITUDE))
             else @Suppress("DEPRECATION") v.vibrate(14)
@@ -316,7 +349,7 @@ class MainActivity : Activity(), SensorEventListener {
         @JavascriptInterface
         fun buzz(key: String, pattern: String) {
             if (!ok(key)) return
-            val v = getSystemService(Vibrator::class.java) ?: return
+            val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator? ?: return
             val timings = pattern.split(',').mapNotNull { it.trim().toLongOrNull() }.toLongArray()
             if (!v.hasVibrator() || timings.isEmpty()) return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createWaveform(timings, -1))
@@ -383,7 +416,9 @@ class MainActivity : Activity(), SensorEventListener {
         fun setPinned(key: String, on: Boolean) {
             if (!ok(key)) return
             runOnUiThread {
-                val pinned = getSystemService(ActivityManager::class.java).lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+                val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                val pinned = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+                    else @Suppress("DEPRECATION") am.isInLockTaskMode
                 try { if (on && !pinned) startLockTask() else if (!on && pinned) stopLockTask() } catch (_: Exception) {}
             }
         }
@@ -396,7 +431,10 @@ class MainActivity : Activity(), SensorEventListener {
         @JavascriptInterface
         fun selectPc(key: String, id: String) {
             if (!ok(key) || !link.select(id)) return
-            runOnUiThread { stream.stop(); stream.start(); web.reload() }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                stream.stop(); if (resumed) stream.start(); web.reload()
+            }
         }
 
         @JavascriptInterface
@@ -452,7 +490,7 @@ class MainActivity : Activity(), SensorEventListener {
         private const val ASSET_HOST = "appassets.androidplatform.net"
         private val NO_STORE = mapOf("Cache-Control" to "no-store")
         private const val PANEL_HEADER = "X-PhoneBox-Panel"
-        private val READ_ONLY_IMAGES = setOf("/agent/api/art", "/agent/api/procs/icon", "/agent/api/controls/radio-logo", "/agent/api/apps/icon", "/agent/api/discord/img")
+        private val READ_ONLY_IMAGES = setOf("/agent/api/art", "/agent/api/procs/icon", "/agent/api/controls/radio-logo", "/agent/api/apps/icon", "/agent/api/discord/img", "/agent/api/shortcuts/icon")
         private fun FORBIDDEN() = WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", NO_STORE, java.io.ByteArrayInputStream(ByteArray(0)))
     }
 }
