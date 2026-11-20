@@ -1,5 +1,63 @@
 # Changelog
 
+## Unreleased
+
+**Languages**
+- Brazilian Portuguese (pt-BR): the panel, the settings page, the widget catalog and the Android pairing dialog. A phone
+  set to pt-BR picks it on its own, and other Portuguese phones keep Portugal's Portuguese (#313,
+  [ThalesAugusto0](https://github.com/ThalesAugusto0)).
+
+**Widgets**
+- Photo frame: an **Immich album** as the source, next to a folder on this computer (Settings › General › Photo
+  frame: the Immich address, a read-only API key, **Load albums**, pick one). The agent fetches Immich's preview-size
+  pictures and serves them to the phone like the folder's; the address and the key stay on the computer. Tested with
+  Immich 3.4.1 and 3.4.2 (#280, #279, [snachodog](https://github.com/snachodog)).
+- A **Wake the PC** button on the panel while the paired computer is unreachable: the phone sends the Wake-on-LAN
+  packet itself, only on the computer's own network (a network holding one of the addresses it was paired with), to the
+  MAC addresses the computer gave it when Wi-Fi pairing is on. Not offered on Android 5.0 (#303,
+  [Vasilispapg](https://github.com/Vasilispapg)).
+- Shortcut keys: a **Long press runs** option on each key. Tapping the key on the phone runs it as before; holding it for
+  half a second runs another key you choose (hold *Mute* to open the mixer). The phone only says the key was held, so
+  the long press cannot point at anything but a key from your own settings (#307,
+  [Vasilispapg](https://github.com/Vasilispapg)).
+- Shortcut keys: a new **Cycle through other keys** kind. Each tap runs the next key of its list and starts again after
+  the last, and the key shows the face of the key that ran. Where it stands is kept until the agent restarts (#310,
+  [Vasilispapg](https://github.com/Vasilispapg)).
+- Shortcut macros: `if:` … `else` … `endif` runs steps only when a condition holds: `running:<program>`, `muted`,
+  `on:<shortcut id>` (a toggle that is on) or `push:<key>` (a pushed value that is on), and `!` in front turns it
+  around. Each macro is checked before its first step, so a missing `endif` stops it before anything runs (#309,
+  [Vasilispapg](https://github.com/Vasilispapg)).
+- News feeds on Windows: an article whose link has square brackets after the host, such as Franceinfo's
+  `#xtor=RSS-3-[lestitres]`, opens in the browser instead of File Explorer's Documents folder (#312,
+  [Emsaco64](https://github.com/Emsaco64)).
+- **Steam friends** and **Steam friend activity** widgets: friends' avatars, online state, last seen time and current
+  game, and a short feed of friends coming online, starting a game or going offline. They need a Steam Web API key,
+  which stays on the computer: the agent asks Steam, about once a minute and only while one of the widgets is on an
+  enabled page, and the phone never contacts Steam. The activity feed lives in memory only. See
+  [docs/STEAM.md](docs/STEAM.md) (#244, [Sawaid-hub](https://github.com/Sawaid-hub)).
+- Pomodoro: an optional sound when a step ends, off by default and silent on the night screen, at a share of the
+  phone's media volume (#305, [abdulah-x](https://github.com/abdulah-x)).
+- Trackpad on macOS: the widget now moves the pointer, clicks and scrolls on a Mac, and three- and four-finger swipes,
+  spread and pinch do what the Mac's own Trackpad settings say (Mission Control, App Exposé, moving between
+  full-screen apps, Show Desktop, Apps). It needs Accessibility for PhoneBox. New **Haptics** options set how strongly the phone vibrates;
+  a tick while scrolling is off by default, and gestures vibrate only where the computer acts on them (#300,
+  [Vasilispapg](https://github.com/Vasilispapg)).
+- On air and the `mic-in-use` / `camera-in-use` rules work on macOS: the agent reads which apps use the microphone
+  (macOS 14.2 and later; before that, only whether one does) and whether a camera is running. The camera part is
+  untested on a Mac with a built-in camera; see the guide (#301, [Vasilispapg](https://github.com/Vasilispapg)).
+
+**Agent**
+- Shortcuts on Windows: a program a shortcut starts (Spotify, say) opens in front instead of behind the window in use,
+  as the App dock's apps already do (#322, [adamjorgkaizen-oss](https://github.com/adamjorgkaizen-oss)).
+- Discord: the login no longer fails with `invalid_request: Missing "redirect_uri"`. The authorization request now
+  names the same `http://127.0.0.1` redirect as the token exchange (#316, [Sune2you](https://github.com/Sune2you)).
+- Wake-on-LAN: a **Wake a computer** shortcut (Settings › Shortcuts) turns on another machine on your network from its
+  MAC address, also while the phone is away on Tailscale. It sends a magic packet on the local network only; see the
+  guide for the BIOS and adapter settings the machine needs (#302, [Vasilispapg](https://github.com/Vasilispapg)).
+- Now Playing on macOS and Linux is read every second only while a panel or a `media-playing` rule asks for it, and
+  every 10 seconds otherwise, so an idle computer no longer starts `nowplaying-cli` or `playerctl` every second (#299,
+  [EgglezosHub](https://github.com/EgglezosHub)).
+
 ## 0.9.24 — 2026-11-20
 
 A security fix for phones connected over USB: the USB connection now answers only the PhoneBox app, so **update the
