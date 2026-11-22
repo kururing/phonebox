@@ -1,4 +1,4 @@
-import { API, PANEL_HEADERS, api, applyState, bridge, buzz, D, evSeq, h, en, haptic, icon, toast, store, t } from '../main.js';
+import { API, PANEL_HEADERS, api, applyState, bridge, buzz, curPage, D, evSeq, h, en, haptic, icon, nightOn, pages, sheet, toast, store, t } from '../main.js';
 import { W } from '../registry.js';
 
 let cached = null, at = 0, epoch = 0, pending = null;
@@ -1190,4 +1190,474 @@ W.trackpad = {
       }
     };
   }
+};
+
+let screenSessionQueue = Promise.resolve();
+const screenSessionCommand = (path, query = '') => {
+  screenSessionQueue = screenSessionQueue.catch(() => {}).then(() => api(path + query, 'POST', 10000));
+  return screenSessionQueue;
+};
+
+W['screen-mirror'] = {
+  needs: ['tick'],
+  always: true,
+  create(box, { page, o = {} }) {
+    box.classList.add('screen-mirror-widget');
+    const streamEnabled = window.parent === window;
+    const message = h('div', 'screen-mirror-empty', '');
+    const stage = h('div', 'screen-mirror-stage', message);
+    stage.setAttribute('aria-label', 'Màn hình phụ');
+    const video = h('video', 'screen-mirror-frame');
+    video.autoplay = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.disablePictureInPicture = true;
+    const canvas = h('canvas', 'screen-mirror-frame');
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    box.append(stage);
+
+    let active = false, starting = false, destroyed = false, current = false, wasCurrent = false;
+    let streamAbort = null, mediaSource = null, mediaSourceUrl = null, sourceBuffer = null, videoDecoder = null;
+    let nativeActive = false, nativeHandler = null, resizeObserver = null;
+    let lastResolution = '', lastStartTry = 0, lastRestartAt = 0;
+    const hasNativeMirror = streamEnabled && typeof bridge?.startScreenMirror === 'function';
+    const computeNativeRect = () => {
+      if (!active || !current || destroyed || nightOn || sheet) return null;
+      const ov = document.getElementById('overview');
+      const ap = document.getElementById('approval');
+      if ((ov && !ov.hidden) || (ap && !ap.hidden)) return null;
+      const r = stage.getBoundingClientRect();
+      if (r.width < 16 || r.height < 16 || r.right <= 0 || r.left >= window.innerWidth) return null;
+      const dpr = window.devicePixelRatio || 1;
+      const left = Math.max(0, Math.round(r.left * dpr));
+      const top = Math.max(0, Math.round(r.top * dpr));
+      const right = Math.min(Math.round(window.innerWidth * dpr), Math.round(r.right * dpr));
+      const bottom = Math.min(Math.round(window.innerHeight * dpr), Math.round(r.bottom * dpr));
+      const width = right - left;
+      const height = bottom - top;
+      return width >= 16 && height >= 16 ? { left, top, width, height } : null;
+    };
+    const syncNativeRect = () => {
+      if (!nativeActive || !hasNativeMirror) return;
+      const rect = computeNativeRect();
+      if (rect) bridge.updateScreenMirrorRect(rect.left, rect.top, rect.width, rect.height);
+      else bridge.updateScreenMirrorRect(0, 0, 0, 0);
+    };
+    const fallbackPointers = new Map();
+    const touchQueue = [];
+    let touchInFlight = false;
+    const isMoveOnlyContacts = (contacts) =>
+      contacts.length > 0 && contacts.every(c => c.state === 1);
+    const pumpFallbackTouch = () => {
+      if (touchInFlight || touchQueue.length === 0) return;
+      const contacts = touchQueue.shift();
+      touchInFlight = true;
+      fetch(`${API}/screen/touch`, {
+        method: 'POST',
+        headers: { ...PANEL_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contacts }),
+        keepalive: true,
+      }).catch(() => {}).finally(() => {
+        touchInFlight = false;
+        pumpFallbackTouch();
+      });
+    };
+    const flushFallbackTouch = (contacts) => {
+      if (touchQueue.length > 0 && isMoveOnlyContacts(contacts) && isMoveOnlyContacts(touchQueue[touchQueue.length - 1])) {
+        touchQueue[touchQueue.length - 1] = contacts;
+      } else {
+        if (touchQueue.length >= 32) {
+          const moveIdx = touchQueue.findIndex(isMoveOnlyContacts);
+          touchQueue.splice(moveIdx >= 0 ? moveIdx : 0, 1);
+        }
+        touchQueue.push(contacts);
+      }
+      pumpFallbackTouch();
+    };
+    const fallbackContentBox = () => {
+      const r = stage.getBoundingClientRect();
+      const mw = video.parentNode === stage && video.videoWidth > 0 ? video.videoWidth
+        : (canvas.parentNode === stage && canvas.width > 0 ? canvas.width : r.width);
+      const mh = video.parentNode === stage && video.videoHeight > 0 ? video.videoHeight
+        : (canvas.parentNode === stage && canvas.height > 0 ? canvas.height : r.height);
+      if (r.width <= 0 || r.height <= 0 || mw <= 0 || mh <= 0) return null;
+      const scale = Math.min(r.width / mw, r.height / mh);
+      const dw = mw * scale, dh = mh * scale;
+      return { left: r.left + (r.width - dw) / 2, top: r.top + (r.height - dh) / 2, width: dw, height: dh };
+    };
+    const handleFallbackPointer = (e, state) => {
+      if (nativeActive || !active || !current || destroyed || !streamEnabled) return;
+      if (video.parentNode !== stage && canvas.parentNode !== stage) return;
+      const boxRect = fallbackContentBox();
+      if (!boxRect || boxRect.width <= 0 || boxRect.height <= 0) return;
+      e.preventDefault();
+      if (state === 0) {
+        try { stage.setPointerCapture?.(e.pointerId); } catch (_) {}
+      }
+      const x = Math.max(0, Math.min(1, (e.clientX - boxRect.left) / boxRect.width));
+      const y = Math.max(0, Math.min(1, (e.clientY - boxRect.top) / boxRect.height));
+      const pressure = e.pressure > 0 ? Math.max(1, Math.min(1024, Math.round(e.pressure * 1024))) : 512;
+      const id = Math.abs(e.pointerId | 0) % 256;
+      for (const [pid, c] of fallbackPointers) {
+        if (pid !== e.pointerId && c.state === 0) c.state = 1;
+      }
+      fallbackPointers.set(e.pointerId, { id, state, x, y, pressure });
+      const contacts = [...fallbackPointers.values()].map(c => ({ ...c }));
+      if (state === 2 || state === 3) fallbackPointers.delete(e.pointerId);
+      flushFallbackTouch(contacts);
+    };
+    stage.addEventListener('pointerdown', (e) => handleFallbackPointer(e, 0));
+    stage.addEventListener('pointermove', (e) => { if (fallbackPointers.has(e.pointerId)) handleFallbackPointer(e, 1); });
+    stage.addEventListener('pointerup', (e) => { if (fallbackPointers.has(e.pointerId)) handleFallbackPointer(e, 2); });
+    stage.addEventListener('pointercancel', (e) => { if (fallbackPointers.has(e.pointerId)) handleFallbackPointer(e, 3); });
+    const discardStream = () => {
+      if (fallbackPointers.size > 0) {
+        fallbackPointers.clear();
+        touchQueue.length = 0;
+        flushFallbackTouch([]);
+      }
+      if (nativeActive) {
+        nativeActive = false;
+        try { bridge?.stopScreenMirror?.(); } catch (_) {}
+      }
+      if (nativeHandler && window.onNativeScreenMirror === nativeHandler) window.onNativeScreenMirror = null;
+      nativeHandler = null;
+      resizeObserver?.disconnect();
+      resizeObserver = null;
+      streamAbort?.abort(); streamAbort = null;
+      if (videoDecoder) {
+        try { if (videoDecoder.state !== 'closed') videoDecoder.close(); } catch (_) {}
+        videoDecoder = null;
+      }
+      if (sourceBuffer && mediaSource?.readyState === 'open') {
+        try { mediaSource.removeSourceBuffer(sourceBuffer); } catch (_) {}
+      }
+      if (mediaSource?.readyState === 'open') {
+        try { mediaSource.endOfStream(); } catch (_) {}
+      }
+      sourceBuffer = null; mediaSource = null;
+      if (mediaSourceUrl) URL.revokeObjectURL(mediaSourceUrl);
+      mediaSourceUrl = null;
+      video.pause(); video.removeAttribute('src'); video.load();
+    };
+    const failStream = async detail => {
+      if (!active || !current || destroyed) return;
+      const mediaError = video.error;
+      const mediaDetails = mediaError ? ` (media ${mediaError.code}, ${mediaError.message || ''})` : '';
+      active = false;
+      discardStream();
+      stage.replaceChildren(message);
+      message.textContent = `Không nhận được luồng H.264 từ NVIDIA: ${detail || 'không thể phát'}${mediaDetails}`;
+      try { await screenSessionCommand('/screen/stop'); } catch (_) {}
+    };
+    const appendChunk = (buffer, bytes) => new Promise((resolve, reject) => {
+      const done = () => { cleanup(); resolve(); };
+      const failed = () => { cleanup(); reject(new Error('MediaSource không giải mã được phân đoạn MP4/H.264')); };
+      const cleanup = () => { buffer.removeEventListener('updateend', done); buffer.removeEventListener('error', failed); };
+      buffer.addEventListener('updateend', done, { once: true });
+      buffer.addEventListener('error', failed, { once: true });
+      try { buffer.appendBuffer(bytes); } catch (error) { cleanup(); reject(error); }
+    });
+    const removeOldBuffer = buffer => {
+      const start = buffer.buffered.length ? buffer.buffered.start(0) : 0;
+      const end = video.currentTime - 2;
+      if (end <= start + 0.05) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+      const done = () => { cleanup(); resolve(); };
+      const failed = () => { cleanup(); reject(new Error('MediaSource không thể dọn bộ đệm cũ')); };
+      const cleanup = () => { buffer.removeEventListener('updateend', done); buffer.removeEventListener('error', failed); };
+      buffer.addEventListener('updateend', done, { once: true });
+      buffer.addEventListener('error', failed, { once: true });
+      try { buffer.remove(start, end); } catch (error) { cleanup(); reject(error); }
+      });
+    };
+    const findAud = (buf, from = 0) => {
+      for (let i = from; i <= buf.length - 5; i++) {
+        if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 0 && buf[i + 3] === 1 && buf[i + 4] === 9) return i;
+      }
+      return -1;
+    };
+    const isIdrAccessUnit = au => {
+      for (let i = 0; i <= au.length - 4; i++) {
+        if (au[i] === 0 && au[i + 1] === 0) {
+          if (au[i + 2] === 1 && (au[i + 3] & 0x1f) === 5) return true;
+          if (i <= au.length - 5 && au[i + 2] === 0 && au[i + 3] === 1 && (au[i + 4] & 0x1f) === 5) return true;
+        }
+      }
+      return false;
+    };
+    const connectWebCodecs = async () => {
+      if (!active || !current || destroyed) return false;
+      if (typeof window.VideoDecoder !== 'function' || typeof window.EncodedVideoChunk !== 'function' || !ctx) return false;
+      const config = { codec: 'avc1.4D402A', optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' };
+      try {
+        const support = await VideoDecoder.isConfigSupported(config);
+        if (!support.supported) return false;
+      } catch (_) { return false; }
+      if (!active || !current || destroyed) return true;
+      stage.replaceChildren(canvas);
+      streamAbort = new AbortController();
+      const abort = streamAbort;
+      let sawKey = false, frameIndex = 0;
+      const decoder = new VideoDecoder({
+        output(frame) {
+          if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+            canvas.width = frame.displayWidth;
+            canvas.height = frame.displayHeight;
+          }
+          ctx.drawImage(frame, 0, 0);
+          frame.close();
+        },
+        error(err) {
+          if (!abort.signal.aborted) failStream(err?.message || 'lỗi VideoDecoder');
+        },
+      });
+      videoDecoder = decoder;
+      decoder.configure(config);
+      (async () => {
+        try {
+          const response = await fetch(`${API}/screen/h264?format=annexb&t=${Date.now()}`, {
+            headers: PANEL_HEADERS, cache: 'no-store', signal: abort.signal,
+          });
+          if (!response.ok) throw new Error(`Agent trả HTTP ${response.status}`);
+          if (!response.body) throw new Error('WebView không hỗ trợ đọc luồng dữ liệu');
+          const reader = response.body.getReader();
+          let pending = new Uint8Array(0);
+          while (active && current && !destroyed && decoder.state === 'configured') {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Agent đã đóng luồng');
+            if (!value?.byteLength) continue;
+            if (pending.length === 0) pending = value;
+            else {
+              const merged = new Uint8Array(pending.length + value.length);
+              merged.set(pending, 0);
+              merged.set(value, pending.length);
+              pending = merged;
+            }
+            const firstAud = findAud(pending, 0);
+            if (firstAud < 0) {
+              if (pending.length > 512 * 1024) pending = new Uint8Array(0);
+              continue;
+            }
+            if (firstAud > 0) pending = pending.subarray(firstAud);
+            let nextAud;
+            while ((nextAud = findAud(pending, 5)) >= 0) {
+              const au = pending.slice(0, nextAud);
+              pending = pending.subarray(nextAud);
+              const isKey = isIdrAccessUnit(au);
+              if (!sawKey) {
+                if (!isKey) continue;
+                sawKey = true;
+              }
+              if (decoder.decodeQueueSize > 3 && !isKey) { sawKey = false; continue; }
+              decoder.decode(new EncodedVideoChunk({
+                type: isKey ? 'key' : 'delta',
+                timestamp: frameIndex++ * 16667,
+                data: au,
+              }));
+            }
+          }
+          try { await reader.cancel(); } catch (_) {}
+        } catch (error) {
+          if (!abort.signal.aborted) failStream(error?.message || 'lỗi WebCodecs');
+        }
+      })();
+      return true;
+    };
+    const connectNative = () => {
+      if (!hasNativeMirror || !active || !current || destroyed) return false;
+      stage.replaceChildren(message);
+      message.textContent = '';
+      nativeActive = true;
+      const handler = (event, detail) => {
+        if (nativeHandler !== handler || !active || !current || destroyed) return;
+        if (event === 'connected') {
+          message.textContent = '';
+          syncNativeRect();
+        } else if (event === 'reconnecting') {
+          message.textContent = 'Đang kết nối lại màn hình phụ...';
+        } else if (event === 'restarting') {
+          message.textContent = 'Đang khởi động lại màn hình phụ...';
+          if (Date.now() - lastRestartAt > 2000) {
+            lastRestartAt = Date.now();
+            screenSessionCommand('/screen/start', lastResolution).catch(() => {});
+          }
+        } else if (event === 'fallback') {
+          nativeActive = false;
+          if (window.onNativeScreenMirror === handler) window.onNativeScreenMirror = null;
+          nativeHandler = null;
+          resizeObserver?.disconnect();
+          resizeObserver = null;
+          connectStream();
+        } else if (event === 'error') {
+          nativeActive = false;
+          failStream(detail || 'lỗi phát native MediaCodec');
+        }
+      };
+      nativeHandler = handler;
+      window.onNativeScreenMirror = handler;
+      const rect = computeNativeRect() ?? {
+        left: 0,
+        top: 0,
+        width: Math.max(16, Math.round((window.innerWidth || 1280) * (window.devicePixelRatio || 1))),
+        height: Math.max(16, Math.round((window.innerHeight || 720) * (window.devicePixelRatio || 1))),
+      };
+      if (typeof ResizeObserver === 'function') {
+        resizeObserver = new ResizeObserver(() => syncNativeRect());
+        resizeObserver.observe(stage);
+      }
+      const audioMode = typeof o.audio === 'string' ? o.audio : (o.audio === false ? 'off' : 'default');
+      const audioDevice = typeof o.audioDevice === 'string' ? o.audioDevice : '';
+      const audioAutoSwitch = !!o.audioAutoSwitch;
+      const fitMode = typeof o.fit === 'string' ? o.fit : (o.__primary ? 'contain' : 'fill');
+      const targetFps = Math.max(15, Math.min(60, parseInt(o.fps, 10) || (o.__primary ? 30 : 60)));
+      bridge.startScreenMirror(rect.left, rect.top, rect.width, rect.height, !!o.hevc, audioMode, audioDevice, audioAutoSwitch, fitMode, targetFps);
+      return true;
+    };
+    const connectStream = async () => {
+      if (!active || !current || destroyed) return;
+      if (await connectWebCodecs()) return;
+      if (!active || !current || destroyed) return;
+      stage.replaceChildren(video);
+      const mime = 'video/mp4; codecs="avc1.4D402A"';
+      if (!window.MediaSource || !MediaSource.isTypeSupported(mime)) {
+        failStream(`WebView không hỗ trợ MediaSource ${mime}`);
+        return;
+      }
+      mediaSource = new MediaSource();
+      mediaSourceUrl = URL.createObjectURL(mediaSource);
+      video.src = mediaSourceUrl;
+      video.onerror = () => failStream(`video.error=${video.error?.code ?? 0}, network=${video.networkState}`);
+      streamAbort = new AbortController();
+      const abort = streamAbort;
+      mediaSource.addEventListener('sourceopen', async () => {
+        if (abort.signal.aborted || !active || !current || destroyed) return;
+        try {
+          sourceBuffer = mediaSource.addSourceBuffer(mime);
+          sourceBuffer.mode = 'segments';
+          const response = await fetch(`${API}/screen/h264?t=${Date.now()}`, {
+            headers: PANEL_HEADERS, cache: 'no-store', signal: abort.signal,
+          });
+          if (!response.ok) throw new Error(`Agent trả HTTP ${response.status}`);
+          if (!response.body) throw new Error('WebView không hỗ trợ đọc luồng dữ liệu');
+          const reader = response.body.getReader();
+          let firstChunk = true, lastCleanup = 0;
+          while (active && current && !destroyed) {
+            const { value, done } = await reader.read();
+            if (done) throw new Error('Agent đã đóng luồng');
+            if (!value?.byteLength) continue;
+            await appendChunk(sourceBuffer, value);
+            if (firstChunk) {
+              firstChunk = false;
+              video.play().catch(error => failStream(error?.message || 'không thể bắt đầu phát'));
+            }
+            const now = performance.now();
+            if (sourceBuffer.buffered.length && video.readyState >= 2 && !sourceBuffer.updating) {
+              const start = sourceBuffer.buffered.start(0);
+              const end = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1);
+              const lag = end - video.currentTime;
+              // Keep the phone near the live edge instead of letting MSE's forward buffer add delay.
+              if (lag > 0.08) {
+                try { video.currentTime = Math.max(start, end - 0.01); } catch (_) {}
+                video.playbackRate = 1;
+              } else if (lag > 0.03) {
+                video.playbackRate = 1.1;
+              } else if (video.playbackRate !== 1) {
+                video.playbackRate = 1;
+              }
+              if (now - lastCleanup > 1000 && video.currentTime > start + 2.1) {
+                lastCleanup = now;
+                await removeOldBuffer(sourceBuffer);
+              }
+            }
+          }
+          try { await reader.cancel(); } catch (_) {}
+        } catch (error) {
+          if (!abort.signal.aborted) failStream(error?.message || 'lỗi MediaSource');
+        }
+      }, { once: true });
+    };
+    const startSession = async () => {
+      if (!streamEnabled || active || starting || destroyed) return;
+      starting = true; message.textContent = '';
+      lastStartTry = Date.now();
+      try {
+        let resolution = '';
+        if (o.__primary) {
+          resolution = '?display=primary';
+        } else {
+        try {
+          const size = JSON.parse(bridge?.screenSize?.() || '{}');
+          if (Number.isInteger(size.width) && Number.isInteger(size.height) && size.width >= 320 && size.height >= 200) {
+            let w = size.width, h = size.height;
+            const targetShort = { sd: 480, hd: 720, fhd: 1080, '2k': 1440, '4k': 2160 }[o.quality];
+            if (targetShort) {
+              const shortSide = Math.min(w, h), longSide = Math.max(w, h);
+              const scaledLong = Math.round((targetShort * longSide / shortSide) / 2) * 2;
+              if (w >= h) { w = scaledLong; h = targetShort; }
+              else { w = targetShort; h = scaledLong; }
+            }
+            resolution = `?width=${w}&height=${h}`;
+          }
+        } catch (_) {}
+        }
+        lastResolution = resolution;
+        const status = await screenSessionCommand('/screen/start', resolution);
+        if (!status.supported) throw new Error('Cần PhoneBox Agent trên Windows.');
+        if (status.error) throw new Error(status.error);
+        if (!status.displayAvailable) {
+          message.textContent = status.error || 'Chưa có màn hình phụ trên card NVIDIA';
+          return;
+        }
+        if (destroyed || !current) { await screenSessionCommand('/screen/stop'); return; }
+        active = true;
+        stage.replaceChildren(video);
+        if (!connectNative()) connectStream();
+      } catch (error) {
+        message.textContent = error?.message || 'Không kết nối được với PC';
+      } finally { starting = false; }
+    };
+    const stopSession = async () => {
+      if (!streamEnabled) return;
+      active = false; discardStream();
+      message.textContent = '';
+      stage.replaceChildren(message);
+      try { await screenSessionCommand('/screen/stop'); } catch (_) {}
+    };
+    if (!streamEnabled) message.textContent = 'Mở trang này trên điện thoại để bắt đầu truyền màn hình.';
+    else stage.onclick = () => { if (current && !active && !starting && !destroyed) startSession(); };
+    const syncPage = () => {
+      current = pages[curPage] === page;
+      if (current && !wasCurrent) startSession();
+      else if (!current && wasCurrent) stopSession();
+      else if (current && !active && !starting && !destroyed && streamEnabled && !document.body.classList.contains('offline') && Date.now() - lastStartTry > 4000) startSession();
+      else if (current && nativeActive) syncNativeRect();
+      wasCurrent = current;
+    };
+    const onAppPause = (event) => {
+      if (event.detail) stopSession();
+      else if (current) startSession();
+    };
+    window.addEventListener('phonebox-app-pause', onAppPause);
+    window.addEventListener('phonebox-page-change', syncPage);
+    return {
+      update(kind) {
+        if (kind === 'tick') syncPage();
+      },
+      destroy() {
+        destroyed = true; current = false;
+        window.removeEventListener('phonebox-app-pause', onAppPause);
+        window.removeEventListener('phonebox-page-change', syncPage);
+        stopSession();
+      },
+    };
+  },
+};
+
+W['primary-mirror'] = {
+  needs: ['tick'],
+  always: true,
+  create(box, ctx) {
+    return W['screen-mirror'].create(box, { ...ctx, o: { ...(ctx.o || {}), __primary: true } });
+  },
 };

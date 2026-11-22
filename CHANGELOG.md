@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Requests that hit their deadline now report a timeout instead of the browser's generic AbortError; the secondary-screen encoder handles intentional stop cancellations quietly.
+- Secondary-screen widget captures the NVIDIA-connected display directly with DXGI Desktop Duplication and encodes H.264 with NVENC at 60 fps; the phone preserves the stream's detected resolution and aspect ratio.
+- The secondary-screen stream repeats unchanged frames with constant timestamps so Android can decode the H.264 stream; it runs only in the phone app so the settings-page preview cannot take over its session.
+- The Android screen-mirror widget appends the live fragmented MP4 stream with MediaSource Extensions for reliable playback.
+- The screen-mirror video keeps its source aspect ratio inside the phone layout and seeks back to the live edge to limit buffering delay.
+- The screen-mirror display mode follows the phone's current native pixel dimensions, including its current orientation.
+
 **Languages**
 - Brazilian Portuguese (pt-BR): the panel, the settings page, the widget catalog and the Android pairing dialog. A phone
   set to pt-BR picks it on its own, and other Portuguese phones keep Portugal's Portuguese (#313,

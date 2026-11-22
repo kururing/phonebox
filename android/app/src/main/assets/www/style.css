@@ -80,6 +80,9 @@ button { font: inherit; color: inherit; background: none; border: 0; }
   scroll-snap-stop: always;
   padding: 10px var(--pad-r) 17px var(--pad-l);
 }
+.page.screen-mirror-page { padding: 0; }
+body.screen-mirror-lock #pager { overflow-x: hidden; touch-action: none; }
+body.screen-mirror-lock #dots { display: none !important; pointer-events: none !important; }
 .grid {
   height: 100%;
   display: grid;
@@ -87,6 +90,7 @@ button { font: inherit; color: inherit; background: none; border: 0; }
   grid-template-rows: repeat(6, minmax(0, 1fr));
   gap: 8px;
 }
+.screen-mirror-page .grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 0; }
 .w { position: relative; min-width: 0; min-height: 0; overflow: hidden; container-type: size; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: clamp(10px, 7cqmin, 20px); }
 
@@ -1328,3 +1332,9 @@ body.controls-top .ap-foot { order: -1; margin-bottom: 4px; }
 
 /* text for screen readers only (an icon-only element keeps its meaning) */
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+body.screen-mirror-lock #toast,
+body.screen-mirror-lock #navCard,
+body.screen-mirror-lock #navChip,
+body.screen-mirror-lock #dots,
+body.screen-mirror-lock #approval { display: none !important; }

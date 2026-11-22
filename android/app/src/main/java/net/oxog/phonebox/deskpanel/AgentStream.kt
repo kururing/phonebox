@@ -73,7 +73,7 @@ class AgentStream(private val link: AgentLink, private val deliver: (event: Stri
                 reply.body.bufferedReader(Charsets.UTF_8).use { r ->
                     if (!alive()) return@use
                     dispatch(gen, "open", "{\"route\":\"${route.name.lowercase()}\"}")
-                    val since = System.currentTimeMillis()
+                    var lastUsbCheck = System.currentTimeMillis()
                     var event = "message"
                     val data = StringBuilder()
                     while (alive()) {
@@ -84,7 +84,11 @@ class AgentStream(private val link: AgentLink, private val deliver: (event: Stri
                                 if (data.isNotEmpty()) dispatch(gen, event, data.toString())
                                 event = "message"
                                 data.setLength(0)
-                                if (route == AgentLink.Route.WIFI && System.currentTimeMillis() - since > 60_000) break
+                                val now = System.currentTimeMillis()
+                                if (route == AgentLink.Route.WIFI && now - lastUsbCheck >= 30_000) {
+                                    lastUsbCheck = now
+                                    if (link.isUsbReachable()) break
+                                }
                             }
                             line.startsWith("event:") -> event = line.substring(6).trim()
                             line.startsWith("data:") -> data.append(line.substring(5).trimStart())

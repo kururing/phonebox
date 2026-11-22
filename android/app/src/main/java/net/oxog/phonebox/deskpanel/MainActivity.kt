@@ -1,6 +1,7 @@
 package net.oxog.phonebox.deskpanel
 
 import android.annotation.SuppressLint
+import android.annotation.TargetApi
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.AlertDialog
@@ -14,6 +15,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioManager
 import android.os.BatteryManager
 import android.os.SystemClock
 import android.os.Bundle
@@ -28,15 +30,19 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.Toast
 import android.webkit.JavascriptInterface
 import android.webkit.ConsoleMessage
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebChromeClient
 import android.webkit.WebViewClient
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -50,7 +56,9 @@ import org.json.JSONObject
  */
 class MainActivity : Activity(), SensorEventListener {
 
+    private lateinit var rootContainer: FrameLayout
     private lateinit var web: WebView
+    private lateinit var screenMirror: ScreenMirrorPlayer
     // Set first in onDestroy: dictation and stream callbacks already queued on the UI thread then skip the destroyed WebView.
     private var destroyed = false
     private val dictation by lazy { Dictation(this) { script -> if (!destroyed) web.evaluateJavascript(script, null) } }
@@ -58,6 +66,25 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var stream: AgentStream
     @Volatile private var resumed = false
     @Volatile private var volumeKeysFlipPages = true
+    @Volatile private var mirrorLocked = false
+    private var volUpDown = false
+    private var volDownDown = false
+    private var volChordFired = false
+    private var volChordExitRunnable: Runnable? = null
+    private var lastVolUpTapMs = 0L
+    private var lastVolDownTapMs = 0L
+
+    private fun exitPhoneBoxApp() {
+        runOnUiThread {
+            try {
+                val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                val pinned = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+                    else @Suppress("DEPRECATION") am.isInLockTaskMode
+                if (pinned) stopLockTask()
+            } catch (_: Exception) {}
+            finishAndRemoveTask()
+        }
+    }
     private val sensors by lazy { getSystemService(Context.SENSOR_SERVICE) as SensorManager? }
     private var lastLux = -1f
     private var lastLuxAt = 0L
@@ -73,15 +100,22 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         link = AgentLink(this)
         stream = AgentStream(link) { event, data ->
             val js = "window.onAgentStream && window.onAgentStream(${JSONObject.quote(event)}, ${JSONObject.quote(data)})"
             runOnUiThread { if (!destroyed) web.evaluateJavascript(js, null) }
         }
 
+        rootContainer = FrameLayout(this)
         web = WebView(this)
         web.setBackgroundColor(0xFF000000.toInt())
-        setContentView(web)
+        rootContainer.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        screenMirror = ScreenMirrorPlayer(this, rootContainer, link) { event, detail ->
+            val js = "window.onNativeScreenMirror && window.onNativeScreenMirror(${JSONObject.quote(event)}, ${JSONObject.quote(detail)})"
+            runOnUiThread { if (!destroyed) web.evaluateJavascript(js, null) }
+        }
+        setContentView(rootContainer)
 
         with(web.settings) {
             javaScriptEnabled = true
@@ -114,6 +148,17 @@ class MainActivity : Activity(), SensorEventListener {
             // never runs in iframes), and only when it shows the panel. Bridge calls before it arrives get nothing.
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) = giveKey(view, url)
             override fun onPageFinished(view: WebView, url: String?) = giveKey(view, url)
+
+            @TargetApi(Build.VERSION_CODES.O)
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (destroyed || isFinishing) return true
+                Log.e("PhoneBoxWeb", "WebView renderer gone (didCrash=${detail.didCrash()}); recreating")
+                screenMirror.stop()
+                (view.parent as? ViewGroup)?.removeView(view)
+                try { view.destroy() } catch (_: Throwable) {}
+                recreate()
+                return true
+            }
         }
         if (documentStartKey)
             WebViewCompat.addDocumentStartJavaScript(web, "window.__phoneboxKey='$bridgeKey';", setOf("https://$ASSET_HOST"))
@@ -123,7 +168,16 @@ class MainActivity : Activity(), SensorEventListener {
 
         web.loadUrl("https://$ASSET_HOST/assets/www/index.html")
         hideSystemUi()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) registerBackCallback()
         handlePairingLink(intent)
+    }
+
+    @TargetApi(Build.VERSION_CODES.TIRAMISU)
+    private fun registerBackCallback() {
+        onBackInvokedDispatcher.registerOnBackInvokedCallback(
+            OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            OnBackInvokedCallback { handleBack() },
+        )
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -176,17 +230,26 @@ class MainActivity : Activity(), SensorEventListener {
      */
     private fun fromPanel(req: WebResourceRequest): Boolean =
         req.requestHeaders.keys.any { it.equals(PANEL_HEADER, ignoreCase = true) } ||
-            (req.method == "GET" && req.url.path in READ_ONLY_IMAGES)
+            (req.method == "GET" && req.url.path in READ_ONLY_ASSETS)
 
     private fun proxy(req: WebResourceRequest): WebResourceResponse {
         val path = req.url.encodedPath!!.removePrefix("/agent")
         val query = req.url.encodedQuery?.let { "?$it" } ?: ""
-        val r = link.request(req.method, path + query)
+        val r = if (req.method == "GET" && path == "/api/screen/h264") {
+            val streamReply = link.stream(path + query, readTimeout = 0)
+            if (streamReply == null) {
+                Log.e("PhoneBoxScreen", "H.264 stream could not connect over USB or Wi-Fi")
+                AgentLink.Reply(503, "text/plain", java.io.ByteArrayInputStream("PhoneBox Agent unreachable".toByteArray()))
+            } else {
+                Log.i("PhoneBoxScreen", "H.264 reply over ${streamReply.first}: HTTP ${streamReply.second.code}, ${streamReply.second.contentType}")
+                streamReply.second
+            }
+        } else link.request(req.method, path + query)
         val ct = r.contentType ?: "application/octet-stream"
         val mime = ct.substringBefore(';').trim()
         val charset = if (ct.contains("charset=")) ct.substringAfter("charset=").trim() else null
         val status = if (r.code in 100..599 && r.code !in 300..399) r.code else 502
-        return WebResourceResponse(mime, charset, status, if (status < 400) "OK" else "Error", NO_STORE, r.body)
+        return WebResourceResponse(mime, charset, status, if (status < 400) "OK" else "Error", NO_STORE + ("Content-Type" to ct), r.body)
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
@@ -209,23 +272,101 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
-    /** Volume up / down flip to the previous / next page (unless turned off in the settings). */
+    /** Volume up / down flip to the previous / next page (unless turned off in the settings).
+     *  In mirror mode: volume change is completely blocked; Vol+ & Vol- together takes a PC screenshot,
+     *  and double-pressing Vol+ or Vol- switches pages. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val key = when (event.keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP -> "prev"
-            KeyEvent.KEYCODE_VOLUME_DOWN -> "next"
-            else -> null
+        val isVolUp = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP
+        val isVolDown = event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
+        if (!isVolUp && !isVolDown) return super.dispatchKeyEvent(event)
+
+        if (mirrorLocked) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                if (isVolUp) volUpDown = true else volDownDown = true
+                if (volUpDown && volDownDown) {
+                    volChordFired = true
+                    lastVolUpTapMs = 0L
+                    lastVolDownTapMs = 0L
+                    volChordExitRunnable?.let { rootContainer.removeCallbacks(it) }
+                    val r = Runnable {
+                        if (volUpDown && volDownDown) {
+                            volChordExitRunnable = null
+                            exitPhoneBoxApp()
+                        }
+                    }
+                    volChordExitRunnable = r
+                    rootContainer.postDelayed(r, 1500L)
+                    return true
+                }
+                val now = SystemClock.elapsedRealtime()
+                if (isVolUp) {
+                    if (now - lastVolUpTapMs <= 400L) {
+                        lastVolUpTapMs = 0L
+                        web.evaluateJavascript("window.onAndroidKey && window.onAndroidKey('prev', true)", null)
+                    } else {
+                        lastVolUpTapMs = now
+                    }
+                } else {
+                    if (now - lastVolDownTapMs <= 400L) {
+                        lastVolDownTapMs = 0L
+                        web.evaluateJavascript("window.onAndroidKey && window.onAndroidKey('next', true)", null)
+                    } else {
+                        lastVolDownTapMs = now
+                    }
+                }
+            } else if (event.action == KeyEvent.ACTION_UP) {
+                val wasChord = volChordFired && volChordExitRunnable != null
+                volChordExitRunnable?.let { rootContainer.removeCallbacks(it) }
+                volChordExitRunnable = null
+                if (isVolUp) volUpDown = false else volDownDown = false
+                if (wasChord && (!volUpDown || !volDownDown)) {
+                    Thread({ try { link.request("POST", "/api/screen/key?key=prtsc") } catch (_: Throwable) {} }, "pb-prtsc").start()
+                }
+                if (!volUpDown && !volDownDown) volChordFired = false
+            }
+            return true
         }
-        if (key == null || !volumeKeysFlipPages) return super.dispatchKeyEvent(event)
-        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+
+        // Outside mirror mode: holding Vol+ & Vol- together for 1.5s also unpins and exits PhoneBox.
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            if (isVolUp) volUpDown = true else volDownDown = true
+            if (volUpDown && volDownDown) {
+                volChordExitRunnable?.let { rootContainer.removeCallbacks(it) }
+                val r = Runnable {
+                    if (volUpDown && volDownDown) {
+                        volChordExitRunnable = null
+                        exitPhoneBoxApp()
+                    }
+                }
+                volChordExitRunnable = r
+                rootContainer.postDelayed(r, 1500L)
+                return true
+            }
+        } else if (event.action == KeyEvent.ACTION_UP) {
+            volChordExitRunnable?.let { rootContainer.removeCallbacks(it) }
+            volChordExitRunnable = null
+            if (isVolUp) volUpDown = false else volDownDown = false
+        }
+
+        if (!volumeKeysFlipPages) return super.dispatchKeyEvent(event)
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            val key = if (isVolUp) "prev" else "next"
             web.evaluateJavascript("window.onAndroidKey && window.onAndroidKey('$key')", null)
+        }
         return true
+    }
+
+    private fun handleBack() {
+        if (destroyed) return
+        if (screenMirror.dismissKeyboardIfOpen()) return
+        if (mirrorLocked) return
+        web.evaluateJavascript("window.onAndroidBack && window.onAndroidBack()", null)
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        // Kiosk behaviour: Back does not leave the app, it returns to the first page.
-        web.evaluateJavascript("window.onAndroidBack && window.onAndroidBack()", null)
+        // Kiosk behaviour: Back does not leave the app, it returns from mirror mode or to the first page.
+        handleBack()
     }
 
     override fun onResume() {
@@ -249,6 +390,7 @@ class MainActivity : Activity(), SensorEventListener {
         resumed = false
         dictation.cancel(0) // the microphone is never left open behind another app or a dark screen
         sensors?.unregisterListener(this)
+        screenMirror.stop()
         stream.stop()
         // WebView.onPause() leaves JavaScript running: tell the panel to stop polling and refreshing while nobody sees it
         web.evaluateJavascript("window.onAppPause && window.onAppPause(true)", null)
@@ -261,11 +403,18 @@ class MainActivity : Activity(), SensorEventListener {
         resumed = false
         dictation.cancel(0)
         sensors?.unregisterListener(this)
+        screenMirror.stop()
         stream.stop()
+        try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val pinned = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+                else @Suppress("DEPRECATION") am.isInLockTaskMode
+            if (pinned) stopLockTask()
+        } catch (_: Exception) {}
         link.trackpadSocket.close()
         link.close()
         (web.parent as? ViewGroup)?.removeView(web) // a WebView must be detached before destroy()
-        web.destroy()
+        try { web.destroy() } catch (_: Throwable) {}
         super.onDestroy()
     }
 
@@ -480,6 +629,14 @@ class MainActivity : Activity(), SensorEventListener {
         @JavascriptInterface
         fun version(key: String): String = if (ok(key)) packageManager.getPackageInfo(packageName, 0).versionName ?: "" else ""
 
+        /** Native pixel size of the phone display in its current orientation. */
+        @JavascriptInterface
+        fun screenSize(key: String): String {
+            if (!ok(key)) return "{}"
+            val metrics = resources.displayMetrics
+            return JSONObject().put("width", metrics.widthPixels).put("height", metrics.heightPixels).toString()
+        }
+
         /** Dictation widget: true when the phone has a speech recognizer. */
         @JavascriptInterface
         fun canListen(key: String): Boolean = ok(key) && dictation.available()
@@ -497,13 +654,82 @@ class MainActivity : Activity(), SensorEventListener {
 
         @JavascriptInterface
         fun cancelListening(key: String, id: Int) { if (ok(key) && id > 0) dictation.cancel(id) }
+
+        @JavascriptInterface
+        fun startScreenMirror(
+            key: String,
+            left: Int,
+            top: Int,
+            width: Int,
+            height: Int,
+            preferHevc: Boolean,
+            audioMode: String,
+            audioDevice: String,
+            audioAutoSwitch: Boolean,
+            fitMode: String,
+            targetFps: Int,
+        ) {
+            if (!ok(key) || destroyed) return
+            screenMirror.start(
+                left,
+                top,
+                width,
+                height,
+                preferHevc,
+                audioMode = audioMode,
+                audioDevice = audioDevice,
+                audioAutoSwitch = audioAutoSwitch,
+                fitMode = fitMode,
+                targetFps = targetFps,
+            )
+        }
+
+        @JavascriptInterface
+        fun updateScreenMirrorRect(key: String, left: Int, top: Int, width: Int, height: Int) {
+            if (!ok(key) || destroyed) return
+            screenMirror.updateRect(left, top, width, height)
+        }
+
+        @JavascriptInterface
+        fun stopScreenMirror(key: String) {
+            if (!ok(key) || destroyed) return
+            screenMirror.stop()
+        }
+
+        @JavascriptInterface
+        fun screenMirrorCapabilities(key: String): String =
+            if (ok(key)) screenMirror.capabilitiesJson() else "{}"
+
+        @JavascriptInterface
+        fun exitApp(key: String) {
+            if (!ok(key) || destroyed) return
+            exitPhoneBoxApp()
+        }
+
+        @JavascriptInterface
+        fun setMirrorLocked(key: String, locked: Boolean) {
+            if (!ok(key) || destroyed) return
+            mirrorLocked = locked
+            runOnUiThread {
+                if (!destroyed) {
+                    volumeControlStream = if (locked) AudioManager.STREAM_MUSIC else AudioManager.USE_DEFAULT_STREAM_TYPE
+                    hideSystemUi()
+                    if (locked) {
+                        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                        val pinned = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+                            else @Suppress("DEPRECATION") am.isInLockTaskMode
+                        try { if (!pinned) startLockTask() } catch (_: Exception) {}
+                    }
+                }
+            }
+        }
     }
 
     companion object {
         private const val ASSET_HOST = "appassets.androidplatform.net"
         private val NO_STORE = mapOf("Cache-Control" to "no-store")
         private const val PANEL_HEADER = "X-PhoneBox-Panel"
-        private val READ_ONLY_IMAGES = setOf("/agent/api/art", "/agent/api/procs/icon", "/agent/api/controls/radio-logo", "/agent/api/apps/icon", "/agent/api/discord/img", "/agent/api/shortcuts/icon")
+        private val READ_ONLY_ASSETS = setOf("/agent/api/art", "/agent/api/procs/icon", "/agent/api/controls/radio-logo", "/agent/api/apps/icon", "/agent/api/discord/img", "/agent/api/shortcuts/icon", "/agent/api/screen/h264")
         private fun FORBIDDEN() = WebResourceResponse("text/plain", "utf-8", 403, "Forbidden", NO_STORE, java.io.ByteArrayInputStream(ByteArray(0)))
     }
 }

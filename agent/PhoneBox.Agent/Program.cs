@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets;
 using PhoneBox.Agent;
 
 #if WINDOWS
@@ -11,6 +12,12 @@ if (args.Length == 3 && args[0] == "--cpu-sensors")
     await WindowsCpuSensors.RunWorker(args[1], args[2]);
     return;
 }
+if (args.Length >= 2 && args[0] == "--install-vdd")
+{
+    Environment.ExitCode = ScreenMirror.RunVddInstallerWorker(args);
+    return;
+}
+ScreenMirror.EnablePerMonitorDpiAwareness();
 #endif
 
 var endpoint = AgentEndpoint.FromArgs(args);
@@ -63,6 +70,7 @@ builder.WebHost.ConfigureKestrel(k =>
     // Wi-Fi / Tailscale: HTTPS with a pinned self-signed certificate, token required (see Lan.cs).
     if (lanCert is not null) k.Listen(IPAddress.Any, lanCfg.Port, l => l.UseHttps(lanCert));
 });
+builder.Services.Configure<SocketTransportOptions>(o => o.NoDelay = true);
 builder.Logging.ClearProviders();
 builder.Logging.AddFilter("Microsoft", LogLevel.Warning);
 builder.Logging.AddProvider(new FileLoggerProvider());
@@ -78,6 +86,7 @@ builder.Services.AddSingleton(_ => new ShortcutIconUploads(Path.Combine(configDi
 builder.Services.AddSingleton<PairingCodes>();
 builder.Services.AddSingleton<SpotifyControl>();
 builder.Services.AddSingleton<ControlDeck>();
+builder.Services.AddSingleton<ScreenMirror>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ControlDeck>());
 builder.Services.AddSingleton<PushStore>();
 builder.Services.AddSingleton<CommandRunner>();
@@ -111,6 +120,10 @@ AddMonitor<ChargeGuard>(builder.Services);
 builder.Services.AddHostedService<Tray>();
 
 var app = builder.Build();
+// Screen-mirror widget option "realTouch" (default on): real touch injection hides the PC cursor while touching.
+app.Services.GetRequiredService<ScreenMirror>().RealTouchProvider = () => !configStore.Get().Pages
+    .SelectMany(p => p.Widgets ?? [])
+    .Any(w => w.Type is "screen-mirror" or "primary-mirror" && w.Bool("realTouch") == false);
 
 app.MapGet("/api/controls/state", async (ControlDeck deck, CancellationToken ct) => Results.Json(await deck.Snapshot(ct)));
 app.MapPost("/api/controls/command/{kind}", async (string kind, string? id, string? op, int? value, bool? muted,
@@ -187,7 +200,17 @@ app.Use((ctx, next) =>
 var timings = new RequestTimings();
 app.Use(async (ctx, next) =>
 {
-    if (!ctx.Request.Path.StartsWithSegments("/api") || ctx.Request.Path.StartsWithSegments("/api/stream")) { await next(ctx); return; }
+    if (!ctx.Request.Path.StartsWithSegments("/api")
+        || ctx.Request.Path.StartsWithSegments("/api/stream")
+        || ctx.Request.Path.StartsWithSegments("/api/screen/h264")
+        || ctx.Request.Path.StartsWithSegments("/api/screen/ws")
+        || ctx.Request.Path.StartsWithSegments("/api/screen/touch")
+        || ctx.Request.Path.StartsWithSegments("/api/screen/audio/install-virtual")
+        || ctx.Request.Path.StartsWithSegments("/api/screen/vdd/install"))
+    {
+        await next(ctx);
+        return;
+    }
     var started = System.Diagnostics.Stopwatch.GetTimestamp();
     try { await next(ctx); }
     finally
@@ -210,7 +233,7 @@ app.MapGet("/api/latency", () => Results.Json(timings.Summary()));
 //    is TLS with the certificate the app pins (handed over adb), needs the key the PhoneBox app made (read over adb),
 //    and serves only the phone API.
 //  - The optional Wi-Fi port only serves the phone API, only over TLS, and only with the paired token.
-app.UseWebSockets();
+app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(5) });
 app.UseRouting();
 app.Use(async (ctx, next) =>
 {
@@ -276,6 +299,43 @@ app.Use(async (ctx, next) =>
 });
 
 app.Map("/api/trackpad", TrackpadHandler.HandleEndpoint);
+app.MapGet("/api/screen/status", (ScreenMirror screen) => Results.Json(screen.Status()));
+app.MapPost("/api/screen/start", (ScreenMirror screen, HttpContext ctx) =>
+{
+    var width = int.TryParse(ctx.Request.Query["width"], out var requestedWidth) ? requestedWidth : 0;
+    var height = int.TryParse(ctx.Request.Query["height"], out var requestedHeight) ? requestedHeight : 0;
+    var primary = string.Equals(ctx.Request.Query["display"], "primary", StringComparison.OrdinalIgnoreCase);
+    return Results.Json(screen.Start(width, height, primary));
+});
+app.MapPost("/api/screen/stop", (ScreenMirror screen) => Results.Json(screen.Stop()));
+app.MapGet("/api/screen/h264", async (ScreenMirror screen, HttpContext ctx) =>
+{
+    if (!screen.Status().Active) { ctx.Response.StatusCode = StatusCodes.Status409Conflict; return; }
+    if (!await screen.StreamH264Async(ctx) && !ctx.Response.HasStarted)
+        ctx.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+});
+app.Map("/api/screen/ws", async (ScreenMirror screen, HttpContext ctx) =>
+{
+    if (!ctx.WebSockets.IsWebSocketRequest) { ctx.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
+    if (!screen.Status().Active) { ctx.Response.StatusCode = StatusCodes.Status409Conflict; return; }
+    if (!await screen.StreamWebSocketAsync(ctx) && !ctx.Response.HasStarted)
+        ctx.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+});
+app.MapPost("/api/screen/touch", async (ScreenMirror screen, HttpRequest req, CancellationToken ct) =>
+{
+    ScreenTouchHttpPayload? body;
+    try { body = await req.ReadFromJsonAsync<ScreenTouchHttpPayload>(new JsonSerializerOptions(JsonSerializerDefaults.Web), ct); }
+    catch (JsonException) { return Results.BadRequest(); }
+    return screen.InjectHttpTouch(body) ? Results.NoContent() : Results.Conflict();
+});
+app.MapPost("/api/screen/key", (string? text, string? key, ScreenMirror screen) =>
+    screen.InjectKey(text, key) ? Results.NoContent() : Results.Conflict());
+app.MapGet("/api/screen/drivers", (ScreenMirror screen) => Results.Json(screen.GetDriversStatus()));
+app.MapPost("/api/screen/vdd/install", async (ScreenMirror screen, CancellationToken ct) =>
+    Results.Json(await screen.InstallVddAsync(ct)));
+app.MapGet("/api/screen/audio/devices", (ScreenMirror screen) => Results.Json(screen.ListAudioOutputs()));
+app.MapPost("/api/screen/audio/install-virtual", async (ScreenMirror screen, CancellationToken ct) =>
+    Results.Json(await screen.InstallVirtualAudioAsync(ct)));
 
 // ---------------------------------------------------------------- Wi-Fi pairing (local / USB only)
 // The phone calls this through the USB tunnel and stores everything it needs to connect over Wi-Fi.

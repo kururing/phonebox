@@ -1,5 +1,11 @@
 PhoneBox agent: third-party software
 
+FFmpeg N-129150-g7ddf7bc8a4, Windows x64 LGPL shared build
+https://ffmpeg.org/  https://github.com/BtbN/FFmpeg-Builds
+The Windows Agent bundles the FFmpeg executable and replaceable shared libraries for hardware H.264 streaming.
+See ffmpeg/LICENSE.txt and ffmpeg/BUILD.txt for the license and exact source revision.
+FFmpeg source: https://github.com/FFmpeg/FFmpeg/tree/g7ddf7bc8a4
+
 LibreHardwareMonitorLib 0.9.6 (Windows CPU sensors)
 https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
 Mozilla Public License 2.0 — https://www.mozilla.org/MPL/2.0/

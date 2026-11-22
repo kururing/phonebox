@@ -35,6 +35,7 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $stage 'PhoneBoxAgent.exe') -PathType Leaf)) {
         throw 'publish failed: staged agent executable not found'
     }
+    & (Join-Path $PSScriptRoot 'get-ffmpeg.ps1') -Destination (Join-Path $stage 'ffmpeg')
 
     Write-Host '==> Stopping running agent'
     Get-Process PhoneBoxAgent, DeskAgent -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -92,6 +93,14 @@ if ($Apk) {
         $newestSource = Get-ChildItem (Join-Path $root 'android\app\src') -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($BuildApk -or -not $apkFile -or $newestSource.LastWriteTime -gt $apkFile.LastWriteTime) {
             Write-Host '==> Building the APK'
+            if (-not $env:JAVA_HOME -or -not (Test-Path (Join-Path $env:JAVA_HOME 'bin\java.exe'))) {
+                $jdk = @(Get-ChildItem 'C:\Program Files (x86)\Android\openjdk\jdk-*', 'C:\Program Files\Android\Android Studio\jbr', "$env:LOCALAPPDATA\Programs\Android Studio\jbr" -ErrorAction SilentlyContinue) |
+                    Where-Object { Test-Path (Join-Path $_.FullName 'bin\java.exe') } | Sort-Object Name -Descending | Select-Object -First 1
+                if ($jdk) { $env:JAVA_HOME = $jdk.FullName; $env:Path = (Join-Path $env:JAVA_HOME 'bin') + ';' + $env:Path }
+            }
+            if (-not $env:ANDROID_HOME -and (Test-Path "$env:LOCALAPPDATA\Android\Sdk")) {
+                $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+            }
             Push-Location (Join-Path $root 'android')
             try { .\gradlew.bat assembleRelease --console=plain -q; if ($LASTEXITCODE) { throw "the Android build failed (exit code $LASTEXITCODE); the phone app was not updated" } } finally { Pop-Location }
             $apkFile = Get-Item $built

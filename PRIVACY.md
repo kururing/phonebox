@@ -59,6 +59,9 @@ Last updated: 2026-11-20 (PhoneBox 0.9.6).
   on your computer (over USB or pinned-TLS Wi-Fi) to control the cursor and scroll. No mouse or gesture data is ever
   recorded, stored or sent outside your local connection. It is active only while an enabled page contains the Trackpad
   widget with **Allow controlling the mouse from the phone** enabled (off by default).
+- **PC screen mirror**: while the Secondary screen widget's page is visible on the phone, the agent captures downscaled
+  JPEG frames of the primary display and sends them only to the paired phone over USB or pinned-TLS Wi-Fi. Frames stay
+  in memory, are not saved to disk, and capturing stops when you leave the page, pause the app or stop the session.
 - **CPU sensors (Windows)**: the bundled LibreHardwareMonitorLib runs in a CPU-only elevated worker. It sends only
   temperature readings to the unelevated agent through a current-user named pipe and stops with that agent. It opens
   no network listener and accepts no commands from the phone.

@@ -30,6 +30,7 @@ foreach ($rid in $targets.Keys) {
     try {
         dotnet publish (Join-Path $root 'agent\PhoneBox.Agent') -c Release -f $targets[$rid] -r $rid --self-contained true -p:PublishSingleFile=true -o $out --nologo -v q --disable-build-servers
         if ($LASTEXITCODE) { throw "publish failed for $rid" }
+        if ($rid -eq 'win-x64') { & (Join-Path $PSScriptRoot 'get-ffmpeg.ps1') -Destination (Join-Path $out 'ffmpeg') }
         $zip = Join-Path $dist "PhoneBoxAgent-$version-$rid.zip"
         Compress-Archive -Path "$out\*" -DestinationPath $zip -Force
     } finally {

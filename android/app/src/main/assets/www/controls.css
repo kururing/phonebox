@@ -160,3 +160,9 @@ html.beat-3 .radio-eq i:nth-child(1),html.beat-2 .radio-eq i:nth-child(2),html.b
 .deck-chooser .deck-button{min-width:0;white-space:normal;overflow-wrap:anywhere}.deck-chooser-horizontal{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(72px,1fr);grid-template-rows:1fr;overflow-x:auto;overflow-y:hidden}.deck-chooser-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));align-content:start}.deck-chooser-horizontal .deck-button,.deck-chooser-grid .deck-button{min-height:64px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 
+
+/* PC screen mirror: starts on the page that contains the widget and stops when leaving it. */
+.screen-mirror-widget { display:flex; min-width:0; min-height:0; padding:0; overflow:hidden; border:0 !important; border-radius:0 !important; }
+.screen-mirror-stage { display:grid; flex:1; min-height:0; min-width:0; place-items:center; overflow:hidden; border-radius:0; background:#000; touch-action:none; user-select:none; -webkit-user-select:none; }
+.screen-mirror-frame { display:block; width:100%; height:100%; min-width:0; min-height:0; object-fit:contain; object-position:center; user-select:none; -webkit-user-drag:none; pointer-events:none; }
+.screen-mirror-empty { padding:10px; color:var(--muted,#94a3b8); font-size:12px; text-align:center; }

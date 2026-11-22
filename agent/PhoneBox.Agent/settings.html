@@ -460,6 +460,16 @@ nav a.on::before { color: var(--accent); }
   .grid2 { grid-template-columns: 1fr; }
   .deck { --cols: 3 !important; }
 }
+
+a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items: center; }
+.drv-list { display: grid; gap: 10px; }
+.drv-item { padding: 12px 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px; display: flex; flex-direction: column; gap: 6px; }
+.drv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.drv-badge { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); background: var(--panel); }
+.drv-badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); background: color-mix(in srgb, var(--ok) 12%, var(--panel)); }
+.drv-badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 12%, var(--panel)); }
+.drv-meta { font-size: 12px; color: var(--muted); }
+.drv-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -537,6 +547,8 @@ nav a.on::before { color: var(--accent); }
       <div class="card" id="appearanceSettings"></div>
       <div class="card" id="controlSettings"></div>
       <p class="lead" data-i18n="s.general.lead">Weather, night mode, display behaviour and the phone connection.</p>
+
+      <div class="card" id="screenDriversCard"></div>
 
       <div class="card">
         <h3 data-i18n="s.weather.title">Weather</h3>
@@ -1176,6 +1188,7 @@ function optionShown(w, d, o) {
   if (!o.showWhen) return true;
   const driver = d.options.find((x) => x.key === o.showWhen.key);
   const v = driver ? optVal(w, driver) : undefined;
+  if ('equals' in o.showWhen) return v === o.showWhen.equals;
   return v !== o.showWhen.not;
 }
 /** The catalog's defaults for a widget type, written out so the panel and the agent see what the inspector shows. */
@@ -1792,7 +1805,51 @@ function optionField(w, o, onValChange) {
           fill(merged);
         }).catch(() => {});
       }
+      if ((w.type === 'screen-mirror' || w.type === 'primary-mirror') && o.key === 'audio' && optVal(w, o) === 'virtual') {
+        const isVi = window.PhoneBoxI18n?.getLang() === 'vi';
+        const link = h('a', {
+          href: '#general',
+          onclick: (e) => {
+            e.preventDefault();
+            location.hash = '#general';
+            requestAnimationFrame(() => $('screenDriversCard')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+          }
+        }, isVi ? 'Cài đặt chung › Driver màn phụ & âm thanh' : 'General › Secondary display & audio drivers');
+        const note = h('span', { class: 'hint', style: { marginTop: '6px', display: 'block' } },
+          isVi ? 'Tải và cài đặt driver âm thanh ảo tại ' : 'Download and install the virtual audio driver in ',
+          link,
+          '.');
+        return field(select, note);
+      }
       return field(select);
+    }
+    case 'screen-audio-device': {
+      let selected = String(v ?? '');
+      const select = h('select', { onchange: (e) => { selected = e.target.value; set(o.key, selected); } },
+        h('option', { value: '' }, 'Mặc định hệ thống'));
+      const load = async () => {
+        try {
+          const r = await fetch('/api/screen/audio/devices');
+          if (!r.ok) return;
+          const data = await r.json();
+          const items = data.devices || [];
+          const opts = [h('option', { value: '', selected: selected === '' }, 'Mặc định hệ thống')];
+          for (const d of items) {
+            const tags = [];
+            if (d.isVirtual) tags.push('Ảo');
+            if (d.isDefault) tags.push('Mặc định');
+            const label = tags.length ? `${d.name} (${tags.join(', ')})` : d.name;
+            opts.push(h('option', { value: d.id, selected: d.id === selected }, label));
+          }
+          if (selected && !items.some((d) => d.id === selected)) {
+            opts.push(h('option', { value: selected, selected: true }, `${t('s.js.unavailable')} ${selected}`));
+          }
+          select.replaceChildren(...opts);
+        } catch (_) { }
+      };
+      load();
+      return field(h('div', { class: 'row', style: { gap: '8px' } }, select,
+        h('button', { type: 'button', class: 'btn sm', onclick: load }, t('s.js.refresh'))));
     }
     case 'multi': {
       // read the stored value on every change: the inspector is not rebuilt between two ticks
@@ -3170,6 +3227,253 @@ function applyLanguageUi(langPref) {
   fitLeads(); // translated intros can be shorter or longer than the old text
 }
 
+let screenDriversData = null;
+let screenDriversLoading = false;
+let screenDriversError = false;
+let screenDriversBusy = null;
+const screenDriversProgress = { display: '', audio: '' };
+
+function screenDriversStrings() {
+  if (window.PhoneBoxI18n?.getLang() === 'vi') {
+    return {
+      title: 'Driver màn hình phụ & âm thanh ảo',
+      lead: 'Tải và cài đặt các driver Windows cần thiết cho widget Màn hình phụ (màn hình ảo) và tách âm thanh riêng sang điện thoại.',
+      refresh: 'Làm mới',
+      windowsOnly: 'Chỉ hỗ trợ trên Windows.',
+      loading: 'Đang kiểm tra trạng thái driver...',
+      loadError: 'Không kiểm tra được trạng thái driver Windows.',
+      ready: 'Đã sẵn sàng',
+      disabled: 'Đang tắt',
+      missingCfg: 'Thiếu cấu hình',
+      errorState: 'Lỗi thiết bị',
+      notInstalled: 'Chưa cài đặt',
+      vddTitle: 'Virtual Display Driver (MttVDD)',
+      vddDesc: 'Tạo màn hình ảo phụ để xuất và điều khiển trên widget Màn hình phụ.',
+      vddInstall: 'Tải & cài đặt',
+      vddEnable: 'Bật driver',
+      vddRepair: 'Sửa / Cài lại',
+      vddInstalling: 'Đang tải và cài đặt Virtual Display Driver (chấp nhận hộp thoại UAC nếu hiện)...',
+      vddEnabling: 'Đang bật lại Virtual Display Driver (chấp nhận hộp thoại UAC nếu hiện)...',
+      vddReadyToast: 'Virtual Display Driver đã sẵn sàng.',
+      vddRebootFallback: 'Đã cài Virtual Display Driver; khởi động lại Windows để hoàn tất.',
+      vddFail: 'Cài đặt Virtual Display Driver thất bại.',
+      vddCallError: 'Lỗi khi gọi trình cài Virtual Display Driver.',
+      audioTitle: 'VB-CABLE (Virtual Audio)',
+      audioDesc: 'Thiết bị âm thanh ảo để tách tiếng riêng sang điện thoại (không phát lẫn loa PC).',
+      audioInstall: 'Tải & cài đặt',
+      audioInstalling: 'Đang tải và cài đặt VB-CABLE (chấp nhận hộp thoại UAC nếu hiện)...',
+      audioReadyHint: 'Chọn app phát ra thiết bị này trong Windows Volume Mixer hoặc bật tự chuyển mặc định trong tùy chọn widget.',
+      audioMissingHint: 'Bấm "Tải & cài đặt" để cài tự động (UAC), hoặc tải thủ công từ trang chính thức.',
+      audioRebootFallback: 'Đã cài VB-CABLE; khởi động lại Windows để hoàn tất.',
+      audioFail: 'Cài đặt VB-CABLE thất bại.',
+      audioCallError: 'Lỗi khi gọi trình cài VB-CABLE.',
+      manualLink: 'Trang tải thủ công ↗',
+      versionLabel: 'Phiên bản',
+      deviceLabel: 'Thiết bị',
+    };
+  }
+  return {
+    title: 'Secondary display & virtual audio drivers',
+    lead: 'Download and install the Windows drivers needed by the Secondary display widget (virtual monitor) and isolated audio routing.',
+    refresh: 'Refresh',
+    windowsOnly: 'Supported on Windows only.',
+    loading: 'Checking driver status...',
+    loadError: 'Could not check Windows driver status.',
+    ready: 'Ready',
+    disabled: 'Disabled',
+    missingCfg: 'Missing config',
+    errorState: 'Device error',
+    notInstalled: 'Not installed',
+    vddTitle: 'Virtual Display Driver (MttVDD)',
+    vddDesc: 'Creates a virtual secondary monitor for the Secondary display widget.',
+    vddInstall: 'Download & install',
+    vddEnable: 'Enable driver',
+    vddRepair: 'Repair / Reinstall',
+    vddInstalling: 'Downloading and installing Virtual Display Driver (accept UAC prompt if shown)...',
+    vddEnabling: 'Enabling Virtual Display Driver (accept UAC prompt if shown)...',
+    vddReadyToast: 'Virtual Display Driver is ready.',
+    vddRebootFallback: 'Virtual Display Driver installed; restart Windows to finish.',
+    vddFail: 'Virtual Display Driver installation failed.',
+    vddCallError: 'Error invoking Virtual Display Driver installer.',
+    audioTitle: 'VB-CABLE (Virtual Audio)',
+    audioDesc: 'Virtual audio output device for routing isolated PC audio to the phone.',
+    audioInstall: 'Download & install',
+    audioInstalling: 'Downloading and installing VB-CABLE (accept UAC prompt if shown)...',
+    audioReadyHint: 'Route apps to this device in Windows Volume Mixer or enable auto-switch in widget options.',
+    audioMissingHint: 'Click "Download & install" for automatic setup (UAC), or download manually from the official page.',
+    audioRebootFallback: 'VB-CABLE installed; restart Windows to finish.',
+    audioFail: 'VB-CABLE installation failed.',
+    audioCallError: 'Error invoking VB-CABLE installer.',
+    manualLink: 'Manual download ↗',
+    versionLabel: 'Version',
+    deviceLabel: 'Device',
+  };
+}
+
+function renderScreenDrivers() {
+  const root = $('screenDriversCard');
+  if (!root) return;
+  const S = screenDriversStrings();
+  const refreshBtn = h('button', {
+    type: 'button',
+    class: 'btn sm',
+    disabled: screenDriversLoading || !!screenDriversBusy,
+    onclick: () => loadScreenDrivers()
+  }, S.refresh);
+
+  const header = h('div', { class: 'row', style: { justifyContent: 'space-between', marginBottom: '6px' } },
+    h('h3', { style: { margin: 0 } }, S.title),
+    refreshBtn);
+  const lead = h('p', { class: 'hint', style: { margin: '0 0 12px' } }, S.lead);
+
+  if (screenDriversError && !screenDriversData) {
+    root.replaceChildren(header, lead, h('p', { class: 'hint', style: { margin: 0 } }, S.loadError));
+    return;
+  }
+  if (!screenDriversData) {
+    root.replaceChildren(header, lead, h('p', { class: 'hint', style: { margin: 0 } }, S.loading));
+    return;
+  }
+  if (!screenDriversData.supported) {
+    root.replaceChildren(header, lead, h('p', { class: 'hint', style: { margin: 0 } }, S.windowsOnly));
+    return;
+  }
+
+  const d = screenDriversData.display || {};
+  if (d.ready && screenDriversBusy !== 'display') screenDriversProgress.display = '';
+  let dBadgeCls = '';
+  let dBadgeText = S.notInstalled;
+  if (d.ready) { dBadgeCls = 'ok'; dBadgeText = S.ready; }
+  else if (d.installed && d.disabled) { dBadgeCls = 'warn'; dBadgeText = S.disabled; }
+  else if (d.installed && !d.configExists) { dBadgeCls = 'warn'; dBadgeText = S.missingCfg; }
+  else if (d.installed) { dBadgeCls = 'warn'; dBadgeText = S.errorState; }
+
+  const dMetaParts = [];
+  if (d.deviceName) dMetaParts.push(`${S.deviceLabel}: ${d.deviceName}`);
+  if (d.version) dMetaParts.push(`${S.versionLabel}: ${d.version}`);
+  const dNote = screenDriversProgress.display || d.error || (!d.installed && d.driverHint ? d.driverHint : '');
+
+  const dActions = [];
+  if (!d.ready) {
+    const isEnableOnly = d.installed && d.disabled && d.configExists;
+    const btnLabel = isEnableOnly ? S.vddEnable : d.installed ? S.vddRepair : S.vddInstall;
+    dActions.push(h('button', {
+      type: 'button',
+      class: 'btn sm primary',
+      disabled: !!screenDriversBusy || screenDriversLoading,
+      onclick: async () => {
+        screenDriversBusy = 'display';
+        screenDriversProgress.display = isEnableOnly ? S.vddEnabling : S.vddInstalling;
+        renderScreenDrivers();
+        try {
+          const r = await fetch('/api/screen/vdd/install', { method: 'POST' });
+          const res = await r.json().catch(() => ({}));
+          if (res.ok && !res.rebootRequired) {
+            screenDriversProgress.display = '';
+            toast(S.vddReadyToast);
+          } else if (res.ok && res.rebootRequired) {
+            screenDriversProgress.display = res.error || S.vddRebootFallback;
+            toast(res.error || S.vddRebootFallback);
+          } else {
+            screenDriversProgress.display = res.error || S.vddFail;
+            toast(res.error || S.vddFail, true);
+          }
+        } catch (_) {
+          screenDriversProgress.display = S.vddCallError;
+          toast(S.vddCallError, true);
+        } finally {
+          screenDriversBusy = null;
+          await loadScreenDrivers();
+        }
+      }
+    }, btnLabel));
+  }
+  dActions.push(h('a', {
+    class: 'btn sm',
+    href: d.downloadUrl || 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases',
+    target: '_blank',
+    rel: 'noopener'
+  }, S.manualLink));
+
+  const displayCard = h('div', { class: 'drv-item' },
+    h('div', { class: 'drv-head' }, h('b', {}, S.vddTitle), h('span', { class: 'drv-badge' + (dBadgeCls ? ' ' + dBadgeCls : '') }, dBadgeText)),
+    h('div', { class: 'hint' }, S.vddDesc),
+    dMetaParts.length ? h('div', { class: 'drv-meta' }, dMetaParts.join(' · ')) : null,
+    dNote ? h('div', { class: 'hint' }, dNote) : null,
+    h('div', { class: 'drv-actions' }, ...dActions));
+
+  const a = screenDriversData.audio || {};
+  const aReady = !!a.virtualDevice;
+  if (aReady && screenDriversBusy !== 'audio') screenDriversProgress.audio = '';
+  const aNote = screenDriversProgress.audio
+    || (aReady ? S.audioReadyHint : a.canInstallVirtual ? `${a.driverHint ? a.driverHint + ' — ' : ''}${S.audioMissingHint}` : (a.driverHint || ''));
+
+  const aActions = [];
+  if (!aReady && a.canInstallVirtual) {
+    aActions.push(h('button', {
+      type: 'button',
+      class: 'btn sm primary',
+      disabled: !!screenDriversBusy || screenDriversLoading,
+      onclick: async () => {
+        screenDriversBusy = 'audio';
+        screenDriversProgress.audio = S.audioInstalling;
+        renderScreenDrivers();
+        try {
+          const r = await fetch('/api/screen/audio/install-virtual', { method: 'POST' });
+          const res = await r.json().catch(() => ({}));
+          if (res.ok && res.device) {
+            screenDriversProgress.audio = '';
+            toast(`${S.ready}: ${res.device.name}`);
+          } else if (res.ok && res.rebootRequired) {
+            screenDriversProgress.audio = res.error || S.audioRebootFallback;
+            toast(res.error || S.audioRebootFallback);
+          } else {
+            screenDriversProgress.audio = res.error || S.audioFail;
+            toast(res.error || S.audioFail, true);
+          }
+        } catch (_) {
+          screenDriversProgress.audio = S.audioCallError;
+          toast(S.audioCallError, true);
+        } finally {
+          screenDriversBusy = null;
+          await loadScreenDrivers();
+        }
+      }
+    }, S.audioInstall));
+  }
+  aActions.push(h('a', {
+    class: 'btn sm',
+    href: screenDriversData.audioDownloadUrl || 'https://vb-audio.com/Cable/',
+    target: '_blank',
+    rel: 'noopener'
+  }, S.manualLink));
+
+  const audioCard = h('div', { class: 'drv-item' },
+    h('div', { class: 'drv-head' }, h('b', {}, S.audioTitle), h('span', { class: 'drv-badge' + (aReady ? ' ok' : '') }, aReady ? S.ready : S.notInstalled)),
+    h('div', { class: 'hint' }, S.audioDesc),
+    a.virtualDevice?.name ? h('div', { class: 'drv-meta' }, `${S.deviceLabel}: ${a.virtualDevice.name}`) : null,
+    aNote ? h('div', { class: 'hint' }, aNote) : null,
+    h('div', { class: 'drv-actions' }, ...aActions));
+
+  root.replaceChildren(header, lead, h('div', { class: 'drv-list' }, displayCard, audioCard));
+}
+
+async function loadScreenDrivers() {
+  screenDriversLoading = true;
+  screenDriversError = false;
+  renderScreenDrivers();
+  try {
+    const r = await fetch('/api/screen/drivers');
+    if (!r.ok) { screenDriversError = true; return; }
+    screenDriversData = await r.json();
+  } catch (_) {
+    screenDriversError = true;
+  } finally {
+    screenDriversLoading = false;
+    renderScreenDrivers();
+  }
+}
+
 function bindLanguage() {
   const I18n = window.PhoneBoxI18n;
   if (!I18n) return;
@@ -3182,6 +3486,7 @@ function bindLanguage() {
     // every section holds localized strings: rebuild them all, not only the pages editor
     renderAppearanceSettings();
     renderControlSettings();
+    renderScreenDrivers();
     renderPages();
     renderDeck();
     renderRules();
@@ -3355,7 +3660,7 @@ async function load() {
   // baseline is taken after they ran: otherwise a freshly loaded page already counts as unsaved, and Revert can never
   // get back to a clean state
   saved = JSON.stringify(cfg);
-  changed(); loadInfo(); loadPhones();
+  changed(); loadInfo(); loadPhones(); loadScreenDrivers();
 }
 
 // one save at a time: pressing Save or Ctrl/Cmd+S again while it runs joins the save in flight, and the busy
@@ -3522,6 +3827,7 @@ function route() {
   document.querySelectorAll('section').forEach((s) => s.classList.toggle('on', s.id === id));
   document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('on', a.getAttribute('href') === '#' + id));
   if (id === 'webhooks') loadPushed();
+  if (id === 'general' && !screenDriversBusy) loadScreenDrivers();
   fitLeads();
 }
 window.addEventListener('hashchange', route);

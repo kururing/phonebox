@@ -56,6 +56,14 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
     internal static void ResetSessionEnding() => Interlocked.Exchange(ref _endingSince, 0); // tests
     private static long _endingSince;
 
+    internal Func<int> KillAdbProcesses { get; set; } = DefaultKillAdbProcesses;
+    internal TimeSpan RecoveryCooldown { get; set; } = TimeSpan.FromSeconds(15);
+    internal TimeSpan DisconnectedPollDelay { get; set; } = TimeSpan.FromSeconds(4);
+    internal TimeSpan ConnectedPollDelay { get; set; } = TimeSpan.FromSeconds(12);
+    internal TimeSpan CommandTimeout { get; set; } = TimeSpan.FromSeconds(8);
+    private long _lastRecoveryAt = long.MinValue;
+    private bool _settled;
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
 #if WINDOWS
@@ -64,12 +72,67 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
         while (!ct.IsCancellationRequested)
         {
             // while the session is ending nothing is started; the loop goes on, for a shutdown that is cancelled
-            if (SessionEnding) { await Task.Delay(TimeSpan.FromSeconds(4), ct); continue; }
+            if (SessionEnding) { await Task.Delay(DisconnectedPollDelay, ct); continue; }
+            _settled = false;
+            var recovered = false;
             try { await Ensure(ct); }
             catch (OperationCanceledException) { return; }
-            catch (Exception ex) { Report($"adb error: {ex.Message}"); }
-            await Task.Delay(TimeSpan.FromSeconds(4), ct);
+            catch (TimeoutException ex)
+            {
+                _settled = false;
+                SetDevices([]);
+                Report($"adb error: {ex.Message}");
+                recovered = await TryRecoverHungAdbAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                _settled = false;
+                Report($"adb error: {ex.Message}");
+            }
+            var delay = recovered
+                ? TimeSpan.FromMilliseconds(500)
+                : (_settled ? ConnectedPollDelay : DisconnectedPollDelay);
+            await Task.Delay(delay, ct);
         }
+    }
+
+    internal async Task<bool> TryRecoverHungAdbAsync(CancellationToken ct)
+    {
+        if (SessionEnding) return false;
+        var now = Clock();
+        var prev = Interlocked.Read(ref _lastRecoveryAt);
+        var cooldownMs = (long)RecoveryCooldown.TotalMilliseconds;
+        if (prev != long.MinValue && now - prev < cooldownMs) return false;
+        Interlocked.Exchange(ref _lastRecoveryAt, now);
+
+        var killed = KillAdbProcesses();
+        log.LogWarning("ADB server timed out; terminated {Count} hung adb process(es) and restarting", killed);
+        await Task.Delay(TimeSpan.FromMilliseconds(400), ct);
+        return true;
+    }
+
+    private static int DefaultKillAdbProcesses()
+    {
+        var killed = 0;
+        var selfPid = Environment.ProcessId;
+        foreach (var proc in Process.GetProcessesByName("adb"))
+        {
+            try
+            {
+                if (proc.Id == selfPid || proc.HasExited) continue;
+                proc.Kill(entireProcessTree: true);
+                proc.WaitForExit(2000);
+                killed++;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+            {
+            }
+            finally
+            {
+                proc.Dispose();
+            }
+        }
+        return killed;
     }
 
     public async Task OpenPanelAsync()
@@ -117,7 +180,7 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
         }
 
         var serial = cfg.Get().DeviceSerial;
-        var devices = (await Adb(adb, "devices", ct))
+        var devices = (await RunAdb(adb, "devices", ct))
             .Split('\n').Skip(1)
             .Select(l => l.Trim().Split('\t'))
             .Where(p => p.Length == 2 && p[1] == "device")
@@ -140,33 +203,36 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
             if (problem is null && devices.Length > 0) log.LogInformation("USB: the phone is back on USB");
         }
         _missingApp = _missingApp.Where(devices.Contains).ToArray();
-        if (devices.Length == 0) { Report("no phone connected, waiting..."); return; }
+        if (devices.Length == 0) { _settled = false; Report("no phone connected, waiting..."); return; }
 
         // A phone that did not answer "reverse --list" sits out the rest of this round (home screen, keep awake): one
         // more failure there would end the round before the phones after it. The next round tries it again.
         var unreachable = new HashSet<string>();
+        var allSettled = true;
         foreach (var d in devices)
         {
             string list;
-            try { list = await Adb(adb, $"-s {d} reverse --list", ct); }
+            try { list = await RunAdb(adb, $"-s {d} reverse --list", ct); }
             catch (Exception ex) when (ex is IOException or TimeoutException)
             {
                 log.LogWarning("{Device}: could not list adb reverse rules ({Message})", d, ex.Message);
                 unreachable.Add(d);
+                allSettled = false;
                 continue;
             }
             var ruled = HasOwnRule(list);
             var keyed = usb is null || KeyAskedRecently(d, usb.HasKey(d) && !refreshKeys ? KeyRefreshMs : KeyRetryMs);
             if (ruled && keyed && !_missingApp.Contains(d)) continue;
+            allSettled = false;
             // is the app there at all? (the agent may have been installed on its own, with winget or Scoop)
-            var installed = (await Adb(adb, $"-s {d} shell pm path net.oxog.phonebox.deskpanel", ct, anyExit: true)).Contains("package:");
+            var installed = (await RunAdb(adb, $"-s {d} shell pm path net.oxog.phonebox.deskpanel", ct, anyExit: true)).Contains("package:");
             _missingApp = installed ? _missingApp.Where(x => x != d).ToArray() : _missingApp.Union([d]).ToArray();
             if (!installed) { Report($"{d}: the PhoneBox app is not installed (Settings › General › Install the phone app)"); continue; }
             if (!keyed) await ReadKeyAsync(adb, d, ct);
             if (ruled) continue;
             // the phone had a rule already: this agent restarted (its USB port changed), the phone was not plugged in now
             var restarted = HasAnyRule(list);
-            await Adb(adb, $"-s {d} reverse {Rule} {TargetRule}", ct);
+            await RunAdb(adb, $"-s {d} reverse {Rule} {TargetRule}", ct);
             if (restarted) { log.LogInformation("{Device}: adb reverse moved to this agent", d); continue; }
             // A newly plugged-in phone must not light up while the computer is locked.
             if (cfg.Get().Display.FollowComputerLock && OperatingSystem.IsMacOS())
@@ -175,8 +241,8 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
             }
             else if (cfg.Get().Display.OpenOnConnect)
             {
-                await Adb(adb, $"-s {d} shell input keyevent KEYCODE_WAKEUP", ct);
-                await Adb(adb, $"-s {d} shell am start -n {PanelActivity}", ct);
+                await RunAdb(adb, $"-s {d} shell input keyevent KEYCODE_WAKEUP", ct);
+                await RunAdb(adb, $"-s {d} shell am start -n {PanelActivity}", ct);
                 log.LogInformation("{Device}: adb reverse set up, panel opened", d);
             }
             // Settings › Display › open on connect is off: the phone stays as it is (the panel opens when the user starts it).
@@ -188,8 +254,8 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
             foreach (var d in devices.Where(d => !_homeSet.Contains(d) && !unreachable.Contains(d)))
             {
                 // Android answers a refusal with exit code 1; that must not end the round for the other phones and keep-awake.
-                var r = await Adb(adb, $"-s {d} shell cmd package set-home-activity {HomeAlias}", ct, anyExit: true);
-                if (!r.Contains("Success")) continue; // the app has not enabled its home entry yet; try again shortly
+                var r = await RunAdb(adb, $"-s {d} shell cmd package set-home-activity {HomeAlias}", ct, anyExit: true);
+                if (!r.Contains("Success")) { allSettled = false; continue; } // the app has not enabled its home entry yet; try again shortly
                 _homeSet.Add(d);
                 log.LogInformation("{Device}: PhoneBox is now the home app", d);
             }
@@ -201,15 +267,17 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
         {
             foreach (var d in devices.Where(d => !_awakeSet.Contains(d) && !_missingApp.Contains(d) && !unreachable.Contains(d)))
             {
-                await Adb(adb, $"-s {d} shell settings put secure screensaver_enabled 0", ct);
-                await Adb(adb, $"-s {d} shell settings put secure screensaver_activate_on_dock 0", ct);
-                await Adb(adb, $"-s {d} shell settings put secure screensaver_activate_on_sleep 0", ct);
-                await Adb(adb, $"-s {d} shell settings put global stay_on_while_plugged_in 7", ct);
+                await RunAdb(adb, $"-s {d} shell settings put secure screensaver_enabled 0", ct);
+                await RunAdb(adb, $"-s {d} shell settings put secure screensaver_activate_on_dock 0", ct);
+                await RunAdb(adb, $"-s {d} shell settings put secure screensaver_activate_on_sleep 0", ct);
+                await RunAdb(adb, $"-s {d} shell settings put global stay_on_while_plugged_in 7", ct);
                 _awakeSet.Add(d);
                 log.LogInformation("{Device}: screen saver off, stays awake while plugged in", d);
             }
         }
         else _awakeSet.Clear();
+        if (_missingApp.Length > 0 || (usb is not null && devices.Any(d => !usb.HasKey(d)))) allSettled = false;
+        _settled = allSettled && devices.Length > 0;
         Report($"phone connected: {Devices}");
     }
 
@@ -222,13 +290,13 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
     {
         if (usb is null) return;
         _keyTriedAt[d] = Environment.TickCount64;
-        var dump = await Adb(adb, $"-s {d} shell dumpsys package {UsbLink.Package}", ct, anyExit: true);
+        var dump = await RunAdb(adb, $"-s {d} shell dumpsys package {UsbLink.Package}", ct, anyExit: true);
         var key = UsbLink.OwnsKeyProvider(dump)
-            ? UsbLink.ParseKey(await Adb(adb, $"-s {d} shell content query --uri {UsbLink.KeyUri}", ct, anyExit: true))
+            ? UsbLink.ParseKey(await RunAdb(adb, $"-s {d} shell content query --uri {UsbLink.KeyUri}", ct, anyExit: true))
             : null;
         if (key is not null)
         {
-            await Adb(adb, $"-s {d} shell content insert --uri {UsbLink.PinUri} --bind fp:s:{usb.Pin}", ct, anyExit: true);
+            await RunAdb(adb, $"-s {d} shell content insert --uri {UsbLink.PinUri} --bind fp:s:{usb.Pin}", ct, anyExit: true);
             usb.SetKey(d, key);
             _oldApp.Remove(d);
             return;
@@ -295,7 +363,17 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
         return candidates.FirstOrDefault(File.Exists);
     }
 
-    internal static async Task<string> Adb(string adb, string args, CancellationToken ct, bool anyExit = false)
+    private Task<string> RunAdb(string adb, string args, CancellationToken ct, bool anyExit = false) =>
+        Adb(adb, args, ct, anyExit, CommandTimeout);
+
+    internal static void ConfigureEnvironment(ProcessStartInfo psi, bool isWindows)
+    {
+        if (!isWindows) return;
+        psi.Environment["ADB_LIBUSB"] = "0";
+        psi.Environment["ADB_MDNS"] = "0";
+    }
+
+    internal static async Task<string> Adb(string adb, string args, CancellationToken ct, bool anyExit = false, TimeSpan? timeout = null)
     {
         if (SessionEnding) throw new OperationCanceledException("the session is ending");
         var psi = new ProcessStartInfo(adb, args)
@@ -303,7 +381,8 @@ public sealed class AdbReverse(ConfigStore cfg, ILogger<AdbReverse> log, AgentEn
             RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
             WorkingDirectory = AppPaths.NeutralCwd,
         };
-        var result = await ToolProcess.RunAsync(psi, TimeSpan.FromSeconds(8), ct);
+        ConfigureEnvironment(psi, OperatingSystem.IsWindows());
+        var result = await ToolProcess.RunAsync(psi, timeout ?? TimeSpan.FromSeconds(8), ct);
         if (result.ExitCode != 0 && !anyExit) throw new IOException($"ADB exited with code {result.ExitCode}");
         return result.Output;
     }

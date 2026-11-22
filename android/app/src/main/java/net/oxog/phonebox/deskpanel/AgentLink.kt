@@ -94,6 +94,44 @@ class AgentLink(private val context: Context) {
     internal fun activePc(): Pc? = pcs.firstOrNull { it.id == activeId } ?: pcs.firstOrNull()
     internal fun getPinnedFactory(pin: String): SSLSocketFactory = pinnedFactory(pin)
 
+    internal fun isUsbReachable(): Boolean {
+        if (UsbKey.pin(context) == null) return false
+        return try {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress("127.0.0.1", 8765), 150)
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    internal data class WsTarget(val host: String, val port: Int, val pin: String, val token: String, val route: Route)
+
+    internal fun wsTargets(): List<WsTarget> {
+        val list = ArrayList<WsTarget>(4)
+        val usbPin = UsbKey.pin(context)
+        if (usbPin != null) {
+            list.add(WsTarget("127.0.0.1", 8765, usbPin, UsbKey.get(context), Route.USB))
+        }
+        val pc = activePc()
+        if (pc != null && pc.hosts.isNotEmpty()) {
+            val order = pc.hosts.indices.sortedBy { if (it == preferredHost) -1 else it }
+            for (i in order) {
+                list.add(WsTarget(pc.hosts[i], pc.port, pc.id, pc.token, Route.WIFI))
+            }
+        }
+        return list
+    }
+
+    internal fun agentHeaders(): Map<String, String> = linkedMapOf(
+        "X-PhoneBox-App" to appVersion,
+        "X-PhoneBox-Device" to deviceId,
+        "X-PhoneBox-Model" to deviceModel,
+    ).apply {
+        if (webViewInfo.isNotEmpty()) put("X-PhoneBox-WebView", webViewInfo)
+    }
+
     /** The paired computers for the panel: [{"id", "name", "active"}]. */
     fun pcsJson(): String {
         val active = activePc()?.id
@@ -134,9 +172,9 @@ class AgentLink(private val context: Context) {
     @Volatile private var usbFactory: Pair<String, SSLSocketFactory>? = null // its own: the USB agent's pin may differ from the Wi-Fi PC's
 
     /** Opens a long-lived GET (the live stream) over the best route; null when the PC is unreachable. */
-    fun stream(path: String): Pair<Route, Reply>? {
-        usb("GET", path, STREAM_READ_TIMEOUT)?.let { route = Route.USB; return Route.USB to it }
-        wifi("GET", path, STREAM_READ_TIMEOUT)?.let { route = Route.WIFI; return Route.WIFI to it }
+    fun stream(path: String, readTimeout: Int = STREAM_READ_TIMEOUT): Pair<Route, Reply>? {
+        usb("GET", path, readTimeout)?.let { route = Route.USB; return Route.USB to it }
+        wifi("GET", path, readTimeout)?.let { route = Route.WIFI; return Route.WIFI to it }
         return null
     }
 

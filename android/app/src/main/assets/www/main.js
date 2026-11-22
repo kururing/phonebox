@@ -35,7 +35,8 @@ export const $ = (id) => document.getElementById(id);
 // The native bridge (window.Android) is in every frame, sandboxed widgets included, so each call carries a key that only
 // the panel's own frames receive (MainActivity.bridgeKey). This wrapper adds it.
 const BRIDGE = ['battery', 'buzz', 'haptic', 'is24Hour', 'pcs', 'selectPc', 'forgetPc', 'setBrightness', 'setHomeScreen', 'setOrientation',
-  'setPinned', 'setVolumeKeys', 'transport', 'sensors', 'version', 'canListen', 'listen', 'stopListening', 'cancelListening', 'trackpad', 'canWake', 'wakePc'];
+  'setPinned', 'setVolumeKeys', 'transport', 'sensors', 'version', 'screenSize', 'canListen', 'listen', 'stopListening', 'cancelListening', 'trackpad', 'canWake', 'wakePc',
+  'startScreenMirror', 'updateScreenMirrorRect', 'stopScreenMirror', 'screenMirrorCapabilities', 'setMirrorLocked'];
 export const bridge = typeof Android === 'undefined' ? null : Object.fromEntries(BRIDGE.filter((m) => typeof Android[m] === 'function')
   .map((m) => [m, (...args) => Android[m](window.__phoneboxKey || '', ...args)]));
 // Live preview inside the agent's layout editor: the layout comes from the editor (unsaved), not from the agent.
@@ -126,11 +127,11 @@ export async function safeFetch(url, opts = {}) {
 
 export async function api(path, method = 'GET', timeout = 2500) {
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), timeout);
-  // The deadline rejects the caller itself instead of only aborting the request. Aborting is not enough: a body
-  // that started arriving can leave the read pending after the signal fires, and a caller waiting on it never
-  // reaches its own finally - that is what left the approval poll switched off for good.
-  const deadline = new Promise((_, fail) => setTimeout(() => fail(new Error('timeout')), timeout));
+  let deadlineTimer;
+  const timeoutError = Object.assign(new Error(`Request timed out after ${timeout} ms`), { name: 'TimeoutError' });
+  // Let the deadline win the race before aborting fetch. Otherwise fetch's generic AbortError can surface as
+  // "signal is aborted without reason" instead of explaining the actual timeout.
+  const deadline = new Promise((_, fail) => { deadlineTimer = setTimeout(() => fail(timeoutError), timeout); });
   try {
     const work = (async () => {
       const r = await fetch(API + path, { method, signal: ctl.signal, cache: 'no-store', headers: PANEL_HEADERS });
@@ -142,7 +143,10 @@ export async function api(path, method = 'GET', timeout = 2500) {
     })();
     work.catch(() => {}); // whichever side loses the race must not surface as an unhandled rejection
     return await Promise.race([work, deadline]);
-  } finally { clearTimeout(t); }
+  } catch (error) {
+    if (error === timeoutError) ctl.abort(timeoutError);
+    throw error;
+  } finally { clearTimeout(deadlineTimer); }
 }
 
 export const haptic = () => { try { bridge && bridge.haptic(); } catch (_) {} };
@@ -1333,15 +1337,16 @@ export function buildLayout() {
   pager.replaceChildren();
   pages.forEach((p, pi) => {
     const grid = h('div', 'grid');
+    const mirrorOnly = p.widgets.length === 1 && (p.widgets[0].type === 'screen-mirror' || p.widgets[0].type === 'primary-mirror');
     const pageAppearance = PhoneBoxAppearance.resolve(cfg.display?.appearance, p.appearance);
-    const pl = portrait ? portraitLayout(p.widgets) : null;
+    const pl = portrait && !mirrorOnly ? portraitLayout(p.widgets) : null;
     if (pl) { grid.style.gridTemplateColumns = 'repeat(6, minmax(0, 1fr))'; grid.style.gridTemplateRows = `repeat(${pl.rows}, minmax(0, 1fr))`; }
     for (const w of p.widgets) {
       const def = W[w.type];
       if (!def) continue;
       const box = h('div', `w w-${w.type}${def.bare ? ' bare' : ' card'}`);
       const appearance = PhoneBoxAppearance.resolve(cfg.display?.appearance, p.appearance, w.appearance);
-      const at = pl?.pos.get(w) || w;
+      const at = mirrorOnly ? { x: 0, y: 0, w: 1, h: 1 } : pl?.pos.get(w) || w;
       box.style.gridArea = `${at.y + 1} / ${at.x + 1} / span ${at.h} / span ${at.w}`;
       grid.appendChild(box);
       const ctx = { page: p, w, o: w.options || {}, box, appearance };
@@ -1350,7 +1355,7 @@ export function buildLayout() {
       PhoneBoxAppearance.widget(box, appearance);
       mounted.push({ pi, def: inst.needs ? { ...def, needs: inst.needs, always: inst.always ?? def.always } : def, inst, ctx, dirty: true });
     }
-    const sec = h('section', 'page', grid);
+    const sec = h('section', mirrorOnly ? 'page screen-mirror-page' : 'page', grid);
     PhoneBoxAppearance.page(sec, grid, pageAppearance);
     sec.dataset.id = p.id;
     pager.appendChild(sec);
@@ -1510,7 +1515,7 @@ export function goPage(i, instant = false) {
   // scroll-snap-stop: always would stop a programmatic jump at the next page, so snapping is paused for the jump.
   pager.style.scrollSnapType = 'none';
   pager.scrollLeft = i * window.innerWidth;
-  onScroll();
+  onScroll(true);
   clearTimeout(snapTimer);
   snapTimer = setTimeout(() => (pager.style.scrollSnapType = ''), 120);
 }
@@ -1553,6 +1558,43 @@ export const resolvePage = (ref) => {
   const n = typeof ref === 'number' ? ref - 1 : /^\d+$/.test(String(ref)) ? +ref - 1 : pages.findIndex((p) => p.id === ref || p.title.toLowerCase() === String(ref).toLowerCase());
   return n >= 0 && n < pages.length ? n : -1;
 };
+let mirrorReturnPage = null;
+export function isMirrorPage(idx = curPage) {
+  const p = pages[idx];
+  return !!(p?.widgets?.length === 1 && (p.widgets[0].type === 'screen-mirror' || p.widgets[0].type === 'primary-mirror'));
+}
+export function isMirrorLocked() {
+  return !PREVIEW && isMirrorPage(curPage);
+}
+function syncMirrorLock(prevPage) {
+  const locked = isMirrorLocked();
+  if (locked && prevPage >= 0 && !isMirrorPage(prevPage)) mirrorReturnPage = prevPage;
+  document.body.classList.toggle('screen-mirror-lock', locked);
+  try { bridge?.setMirrorLocked?.(locked); } catch (_) {}
+  if (locked) {
+    if (!$('overview').hidden) closeOverview();
+    if (sheet) closeSheet();
+    clearTimeout(pressTimer);
+    pressAt = null;
+    swipeTracking = false;
+  }
+}
+export function exitMirrorMode() {
+  const home = homeIndex();
+  const target = mirrorReturnPage != null && mirrorReturnPage >= 0 && mirrorReturnPage < pages.length && !isMirrorPage(mirrorReturnPage)
+    ? mirrorReturnPage
+    : (home >= 0 && home < pages.length && !isMirrorPage(home) ? home : pages.findIndex((_, i) => !isMirrorPage(i)));
+  mirrorReturnPage = null;
+  if (target >= 0 && target !== curPage) {
+    goPage(target, true);
+    return true;
+  }
+  document.body.classList.remove('screen-mirror-lock');
+  try { bridge?.setMirrorLocked?.(false); } catch (_) {}
+  if (pages.length > 1) openOverview();
+  return false;
+}
+
 export const homeIndex = () => { const id = cfg.display?.homePage; const i = id ? pages.findIndex((p) => p.id === id) : -1; return i >= 0 ? i : 0; };
 
 // ================================================================= calm page switching
@@ -1690,6 +1732,7 @@ function waitReason(req) {
 }
 
 export function pump() {
+  if (isMirrorLocked()) { navCount = null; renderNav(); return; }
   const req = nextRequest();
   if (!req) { navCount = null; renderNav(); clearInterval(navTimer); navTimer = 0; return; }
   if (!navTimer) navTimer = setInterval(pump, 250);
@@ -1776,20 +1819,27 @@ export function flashTitle() {
   titleTimer = setTimeout(() => t.classList.remove('on'), 900);
 }
 
-export function onScroll() {
-  showPageDots();
+export function onScroll(programmatic = false) {
+  if (!programmatic && isMirrorLocked()) {
+    const want = curPage * window.innerWidth;
+    if (Math.abs(pager.scrollLeft - want) > 2) pager.scrollLeft = want;
+    return;
+  }
   const p = Math.round(pager.scrollLeft / window.innerWidth);
+  if (!isMirrorPage(p)) showPageDots();
   if (p === curPage) return;
   const prev = curPage;
   curPage = p;
   if (prev >= 0 && pagePaused) setPagePaused(false, { feedback: false, resume: false });
   updateDots();
-  flashTitle();
+  if (!isMirrorPage(p)) flashTitle();
+  syncMirrorLock(prev);
   setActive();
   if (sheet) closeSheet();
   if (pageOf('procs')) loadProcs();
+  window.dispatchEvent(new CustomEvent('phonebox-page-change', { detail: curPage }));
 }
-pager.addEventListener('scroll', onScroll, { passive: true });
+pager.addEventListener('scroll', () => onScroll(false), { passive: true });
 
 export function openOverview() {
   haptic();
@@ -1874,6 +1924,7 @@ $('dots').addEventListener('click', (e) => {
 export let pressTimer = 0;
 export let pressAt = null;
 pager.addEventListener('pointerdown', (e) => {
+  if (isMirrorLocked()) return;
   if (!e.target.classList.contains('grid') && !e.target.classList.contains('page')) return;
   pressAt = [e.clientX, e.clientY];
   pressTimer = setTimeout(() => { pressAt = null; openOverview(); }, 550);
@@ -1891,7 +1942,7 @@ let swipeTracking = false;
 
 pager.addEventListener('touchstart', (e) => {
   swipeTracking = false;
-  if (e.touches.length !== 1 || pages.length < 2) return;
+  if (isMirrorLocked() || e.touches.length !== 1 || pages.length < 2) return;
   // Dragging a slider, the volume bar, a list or the station carousel must never flip (or wrap) the page.
   if (volDragging || e.target.closest?.('button, input, textarea, select, a, [contenteditable], .s-list, .vb, .bar, .radio-carousel-track, .ac-dial')) return;
   swipeStartX = e.touches[0].clientX;
@@ -1925,9 +1976,10 @@ pager.addEventListener('touchend', (e) => {
 pager.addEventListener('touchcancel', () => { swipeTracking = false; }, { passive: true });
 
 /** Called by the Android shell (volume keys) and by arrow keys in a desktop browser. */
-window.onAndroidKey = (k) => {
+window.onAndroidKey = (k, force = false) => {
   lastTouch = lastUserTouch = Date.now();
   if (nightOn) { wakeUntil = Date.now() + 30_000; setNight(false); return; }
+  if (isMirrorLocked() && !force) return;
   if (!$('overview').hidden) closeOverview();
   if (k === 'next') goPage(curPage + 1 >= pages.length ? 0 : curPage + 1, true);
   else if (k === 'prev') goPage(curPage - 1 < 0 ? pages.length - 1 : curPage - 1, true);
@@ -1954,10 +2006,11 @@ window.onAndroidBack = () => {
   if (closeSessionDetails()) return;
   if (!$('overview').hidden) closeOverview();
   else if (sheet) closeSheet();
+  else if (isMirrorLocked()) exitMirrorMode();
   else if (curPage !== homeIndex()) goPage(homeIndex(), true);
   else openOverview();
 };
-window.addEventListener('resize', () => { buildLayout(); goPage(curPage, true); });
+window.addEventListener('resize', () => { if (isMirrorLocked()) return; buildLayout(); goPage(curPage, true); });
 
 ['pointerdown', 'touchstart'].forEach((ev) => document.addEventListener(ev, (e) => {
   if (dimmed) wakeFromDim();
@@ -2076,7 +2129,7 @@ export function applyBurnIn() {
     root.setProperty('--night-y', `${ny}vmin`);
   }
   const after = Math.max(0, Math.floor(+d.idleDimMin || 0)) * 60_000;
-  const dim = after > 0 && !PREVIEW && !nightOn && $('approval').hidden
+  const dim = after > 0 && !PREVIEW && !nightOn && !isMirrorLocked() && $('approval').hidden
     && Date.now() - Math.max(lastTouch, lastNav, lastWake) > after;
   if (dim !== dimmed) {
     dimmed = dim;
@@ -2094,7 +2147,7 @@ export function tick() {
   if (darkSince && Date.now() - darkSince > 30_000) darkRoom = true;
   const dark = darkRoom && cfg.display?.nightWhenDark === true;
   setNight((isNight(now) || dark) && Date.now() > wakeUntil);
-  if (!PREVIEW && idleDue() && !navQueue.some((r) => r.kind === 'home')) {
+  if (!PREVIEW && !isMirrorLocked() && idleDue() && !navQueue.some((r) => r.kind === 'home')) {
     if (curPage === homeIndex()) { closeSheet(); closeOverview(); lastNav = Date.now(); } // only a sheet to close
     else { navQueue.push({ kind: 'home', at: Date.now(), priority: -1 }); pump(); }
   }
@@ -2335,6 +2388,7 @@ export const idle = () => appPaused || document.hidden;
 window.onAppPause = (paused) => {
   const was = idle();
   appPaused = !!paused;
+  window.dispatchEvent(new CustomEvent('phonebox-app-pause', { detail: appPaused }));
   if (was && !idle()) wokeUp();
 };
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !appPaused) wokeUp(); });

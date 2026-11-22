@@ -13,14 +13,16 @@
     <Product>PhoneBox</Product>
     <Company>PhoneBox</Company>
     <Description>PhoneBox desktop agent: feeds the PhoneBox Android desk panel over USB or Wi-Fi.</Description>
-    <Version>0.9.24</Version>
+    <Version>0.9.35</Version>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <PropertyGroup Condition="$(TargetFramework.Contains('-windows'))">
     <!-- no console window; lives in the system tray -->
     <OutputType>WinExe</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationIcon>phonebox.ico</ApplicationIcon>
   </PropertyGroup>
 
@@ -51,6 +53,10 @@
   <ItemGroup>
     <!-- every release zip: it bundles the .NET runtime (and NAudio on Windows) -->
     <None Update="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup Condition="$(TargetFramework.Contains('-windows')) and Exists('..\..\native\PhoneBoxCapture\build\Release\PhoneBoxCapture.dll')">
+    <None Include="..\..\native\PhoneBoxCapture\build\Release\PhoneBoxCapture.dll" Link="PhoneBoxCapture.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
