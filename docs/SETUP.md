@@ -38,8 +38,8 @@ Setup installs the [latest release](https://github.com/ersinkoc/phonebox/release
    | Linux | `~/.local/share/PhoneBox/app` | `~/.config/PhoneBox` |
    | macOS | `~/Library/Application Support/PhoneBox/app` | `~/Library/Application Support/PhoneBox` |
 
-   Then it asks whether to start PhoneBox at login: a Startup-folder shortcut on Windows, a systemd user service
-   on Linux, a launchd agent on macOS.
+   It adds a Start Menu shortcut on Windows, and asks whether to start PhoneBox at login: a Startup-folder shortcut
+   on Windows, a systemd user service on Linux, a launchd agent on macOS.
 6. **Puts the app on the phone over USB**, if you want. It shows how to turn on USB debugging and waits for the phone.
 7. **Starts the agent** and opens its settings at <http://127.0.0.1:8765>.
 
@@ -76,12 +76,12 @@ curl -fsSL https://raw.githubusercontent.com/ersinkoc/phonebox/main/setup.sh | b
 
 <details><summary><b>Before you run it: warnings</b></summary>
 
-- **The Windows agent is not code-signed yet.** The [SignPath Foundation](../README.md#code-signing-policy) application is pending.
+- **The Windows agent is not code-signed yet.** [SignPath Foundation](../README.md#code-signing-policy) accepted the project; releases are signed once its release certificate is issued.
   Windows SmartScreen or an antivirus may warn about a new, unsigned program, and some antivirus engines have flagged
   it ([#69](https://github.com/ersinkoc/phonebox/issues/69)). Setup only installs a file that matches the release
   checksum. If your antivirus removes `PhoneBoxAgent.exe`, setup says so; restore it from quarantine or report it.
 - **Smart App Control** (Windows 11) blocks programs that are neither signed nor known to Microsoft. The agent is
-  not code-signed yet (signing through SignPath Foundation is pending, [#56](https://github.com/ersinkoc/phonebox/issues/56)),
+  not code-signed yet (signing through SignPath Foundation waits for its release certificate, [#56](https://github.com/ersinkoc/phonebox/issues/56)),
   so with Smart App Control on, Windows refuses to start it: "An Application Control policy has blocked this file"
   ([#69](https://github.com/ersinkoc/phonebox/issues/69)). Setup warns you first, still installs it, and explains
   if Windows blocks it. Please keep Smart App Control on: on older Windows builds it cannot be turned back on without
@@ -158,7 +158,8 @@ The settings are at <http://127.0.0.1:8765>, on Windows also from the tray icon.
 
 ### Stop and start the agent
 
-On Windows, use **Quit** in the tray menu; with **Start with Windows** on, it starts again at the next sign-in.
+On Windows, use **Quit** in the tray menu. Start it again from the Start Menu (search for **PhoneBox**); with
+**Start with Windows** on, it also starts at the next sign-in.
 On Linux, setup installs a systemd user service named `phonebox` (no sudo needed):
 
 ```sh

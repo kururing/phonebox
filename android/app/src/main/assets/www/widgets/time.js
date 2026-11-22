@@ -1,4 +1,4 @@
-import { $, LOCALE, buzz, fmtTime, h, en, haptic, icon, labelled, pad, r1, rich, store, t, tick, toast } from '../main.js';
+import { $, LOCALE, buzz, fmtTime, h, en, haptic, icon, labelled, pad, r1, rich, store, t, tick, toast, tp } from '../main.js';
 import { W } from '../registry.js';
 import { dialEl, lines } from './helpers.js';
 const tr = (...args) => t(...args); // some widgets below name a local `t` (a timer element), which hides the translator
@@ -119,7 +119,7 @@ W.timer = {
       if (st.endsAt && remaining() <= 0) {
         st = { endsAt: null, left: 0, total: 0 }; save(); renderBtns();
         buzz('0,300,150,300,150,600');
-        toast('Time is up', 'ok', '⏳ ' + (o.label || 'Timer'), 6);
+        toast(tp('Time is up'), 'ok', '⏳ ' + (o.label || tp('Timer')), 6);
       }
       const left = remaining();
       dial.set(st.total ? 100 * (left / st.total) : 0, st.total ? fmtTime(left + 999) : '—');
@@ -136,7 +136,7 @@ W.counter = {
     const key = `ct:${page.id}/${w.id}`;
     let st = store.get(key, null) || { n: 0, day: new Date().toDateString() };
     const step = Number(o.step) || 1;
-    const num = h('div', 'ct-n'), minus = h('button', 'pb', '−'), plus = h('button', 'pb main', '+'), reset = h('button', 'mini-btn', 'Reset');
+    const num = h('div', 'ct-n'), minus = h('button', 'pb', '−'), plus = h('button', 'pb main', '+'), reset = h('button', 'mini-btn', tp('Reset'));
     box.style.setProperty('--q', o.color || '#a78bfa');
     box.append(h('div', 'w-title', o.label || en('Counter'), reset), num, h('div', 'pomo-btns', minus, plus));
     // "Start from zero every day" also when the panel stays open over midnight (it is never rebuilt then)
@@ -279,6 +279,7 @@ export function timeInWords(d) {
   else main = [minutes[60 - m], 'to', hourName(hr + 1)];
   return { lead: exact ? "it's" : over ? "it's just after" : "it's almost", main };
 }
+
 W.wordclock = {
   bare: true, needs: ['tick'],
   create(box) {

@@ -94,6 +94,17 @@ public class ConfigTests
     }
 
     [Fact]
+    public void UnreachableNightScreenIsOffByDefaultAndDelayIsClamped()
+    {
+        var defaults = Load("{}").Display;
+        Assert.False(defaults.NightWhenUnreachable);
+        Assert.Equal(5, defaults.UnreachableNightDelayMin);
+        Assert.Equal(30, Load("""{ "display": { "nightWhenUnreachable": true, "unreachableNightDelayMin": 999 } }""").Display.UnreachableNightDelayMin);
+        Assert.Equal(1, Load("""{ "display": { "nightWhenUnreachable": true, "unreachableNightDelayMin": -5 } }""").Display.UnreachableNightDelayMin);
+        Assert.True(Load("""{ "display": { "nightWhenUnreachable": true } }""").Display.NightWhenUnreachable);
+    }
+
+    [Fact]
     public void TemplatesExpandIntoWidgets()
     {
         var c = Load("""{ "pages": [ { "template": "music" }, { "template": "music" } ] }""");
@@ -337,6 +348,13 @@ public class LanTests
     [InlineData("/api/steam", true)]
     [InlineData("/api/steam/avatar", true)]
     [InlineData("/api/steam/other", false)]
+    [InlineData("/api/steam/library", true)]
+    [InlineData("/api/steam/cover", true)]
+    [InlineData("/api/steam/launch", true)]
+    [InlineData("/api/steam/library/x", false)]
+    [InlineData("/api/steam/games", false)]
+    [InlineData("/api/lyrics", true)]
+    [InlineData("/api/lyrics/search", false)]
     [InlineData("/api/push/temperature", true)]
     [InlineData("/api/settings", false)]
     [InlineData("/api/pair", false)]
@@ -542,6 +560,8 @@ public class ConfigConcurrencyTests
     [InlineData("\"vi\"", "vi")]       // added after the list was first written (#177)
     [InlineData("\"pt-BR\"", "pt-BR")] // distinct from pt; casing must survive the round trip, i18n.js looks it up by exact code
     [InlineData("\"pt-br\"", "pt-BR")] // any case still normalizes to the canonical pt-BR, not a lowercase copy
+    [InlineData("\"zh-hant\"", "zh-Hant")]
+    [InlineData("\"AR\"", "ar")]
     [InlineData("\"xx\"", "auto")]     // a language PhoneBox does not have
     [InlineData("null", "auto")]
     [InlineData("\"\"", "auto")]
@@ -570,7 +590,7 @@ public class ConfigConcurrencyTests
         using var s = AppPaths.Resource("www/i18n.js");
         Assert.NotNull(s);
         var js = new StreamReader(s!).ReadToEnd();
-        var codes = System.Text.RegularExpressions.Regex.Matches(js, @"\{\s*code:\s*'([A-Za-z]{2,3}(?:-[A-Za-z]{2,3})?)'").Select(m => m.Groups[1].Value).ToHashSet();
+        var codes = System.Text.RegularExpressions.Regex.Matches(js, @"\{\s*code:\s*'([A-Za-z]{2,3}(?:-[A-Za-z]{2,4})?)'").Select(m => m.Groups[1].Value).ToHashSet();
         Assert.Contains("en", codes);
         Assert.Equal(codes.Order(), DisplayConfig.Languages.Where(l => l != "auto").Order());
     }

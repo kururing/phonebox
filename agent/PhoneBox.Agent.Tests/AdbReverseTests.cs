@@ -20,7 +20,8 @@ public sealed class AdbReverseTests : IDisposable
     /// the app is installed, and "cmd package set-home-activity" fails on <paramref name="homeRefused"/> the way Android
     /// refuses it (an error line, exit code 1).</summary>
     private string FakeAdb(string[] devices, string reverseList, string? homeRefused, bool installed = true,
-        string? reverseRefused = null, string? usbKey = null, string? appVersion = null, bool ownsProvider = true)
+        string? reverseRefused = null, string? usbKey = null, string? appVersion = null, bool ownsProvider = true, int? sdk = null,
+        string? transportId = null)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -28,8 +29,10 @@ public sealed class AdbReverseTests : IDisposable
             File.WriteAllText(cmd, string.Join("\r\n",
                 "@echo off",
                 ">>\"%~dp0calls.log\" echo %*",
+                "if \"%1\"==\"devices\" if \"%2\"==\"-l\" (echo List of devices attached" + string.Concat(devices.Select(d => "& echo " + d + "    device usb:1-1 product:x model:y device:z" + (transportId is null ? "" : " transport_id:" + transportId))) + "& exit /b 0)",
                 "if \"%1\"==\"devices\" (echo List of devices attached" + string.Concat(devices.Select(d => "& echo " + d + "\tdevice")) + "& exit /b 0)",
                 "if \"%2\"==\"" + reverseRefused + "\" if \"%3\"==\"reverse\" if \"%4\"==\"--list\" (exit /b 1)",
+                "if \"%4\"==\"getprop\" (" + (sdk is null ? "exit /b 0)" : "echo " + sdk + "& exit /b 0)"),
                 "if \"%3\"==\"reverse\" if \"%4\"==\"--list\" (" + (reverseList.Length == 0 ? "exit /b 0)" : "echo " + reverseList + "& exit /b 0)"),
                 "if \"%4\"==\"pm\" (" + (installed ? "echo package:/data/app/base.apk& exit /b 0)" : "exit /b 1)"),
                 "if \"%4\"==\"content\" (" + (usbKey is null ? "echo No result found.& exit /b 0)" : "echo Row: 0 key=" + usbKey + "& exit /b 0)"),
@@ -44,8 +47,10 @@ public sealed class AdbReverseTests : IDisposable
         File.WriteAllText(sh, string.Join("\n",
             "#!/bin/sh",
             "echo \"$*\" >> \"$(dirname \"$0\")/calls.log\"",
+            "if [ \"$1\" = devices ] && [ \"$2\" = -l ]; then printf 'List of devices attached\\n" + string.Concat(devices.Select(d => d + "    device usb:1-1 product:x model:y device:z" + (transportId is null ? "" : " transport_id:" + transportId) + "\\n")) + "'; exit 0; fi",
             "if [ \"$1\" = devices ]; then printf 'List of devices attached\\n" + string.Concat(devices.Select(d => d + "\\tdevice\\n")) + "'; exit 0; fi",
             "if [ \"$2\" = '" + reverseRefused + "' ] && [ \"$3\" = reverse ] && [ \"$4\" = --list ]; then exit 1; fi",
+            "if [ \"$4\" = getprop ]; then " + (sdk is null ? "" : "echo " + sdk + "; ") + "exit 0; fi",
             "if [ \"$3\" = reverse ] && [ \"$4\" = --list ]; then " + (reverseList.Length == 0 ? "" : "echo '" + reverseList + "'; ") + "exit 0; fi",
             "if [ \"$4\" = pm ]; then " + (installed ? "echo package:/data/app/base.apk; exit 0; fi" : "exit 1; fi"),
             "if [ \"$4\" = content ]; then " + (usbKey is null ? "echo 'No result found.'; exit 0; fi" : "echo 'Row: 0 key=" + usbKey + "'; exit 0; fi"),
@@ -269,6 +274,68 @@ public sealed class AdbReverseTests : IDisposable
         Assert.Contains("-s FAKE1 reverse tcp:8765 tcp:8765", calls);
         Assert.Equal(openOnConnect, calls.Contains("-s FAKE1 shell am start -n net.oxog.phonebox.deskpanel/.MainActivity"));
         Assert.Equal(openOnConnect, calls.Contains("-s FAKE1 shell input keyevent KEYCODE_WAKEUP"));
+    }
+
+    /// <summary>
+    /// Android 5 and 6 (API 21-23) cannot list adb reverse rules: "reverse --list" fails with "protocol fault" and adb
+    /// re-attaches the phone, and later it lists nothing although the rule is there. The rule then looked missing every
+    /// round and the panel was reopened every round, which restarted its data stream: such a phone is never asked, and
+    /// its rule is set up once per connection.
+    /// </summary>
+    [Fact]
+    public async Task APanelIsNotReopenedEveryRoundWhenThePhoneCannotListReverseRules()
+    {
+        var fake = FakeAdb(["FAKE1"], "", homeRefused: null, reverseRefused: "FAKE1", sdk: 22);
+        var calls = await RunUntil(fake, new { adbPath = fake, deviceSerial = "FAKE1",
+                display = new { homeScreen = false, keepAwake = false, followComputerLock = false, openOnConnect = true } },
+            null, c => c.Count(x => x == "devices") >= 3);
+        Assert.Equal(1, calls.Count(x => x == "-s FAKE1 shell am start -n net.oxog.phonebox.deskpanel/.MainActivity"));
+        // and the rule is set once: setting it again drops the panel's open connection
+        Assert.Equal(1, calls.Count(x => x == "-s FAKE1 reverse tcp:8765 tcp:8765"));
+        Assert.DoesNotContain("-s FAKE1 reverse --list", calls);
+        Assert.Equal(1, calls.Count(x => x == "-s FAKE1 shell getprop ro.build.version.sdk"));
+    }
+
+    /// <summary>
+    /// An Android 5 or 6 phone unplugged and plugged in again between two rounds keeps its serial, so it never leaves the
+    /// device list, but adb dropped its rule with the old connection: a new transport id gets the rule set again.
+    /// </summary>
+    [Fact]
+    public async Task AnOldPhonePluggedInAgainBetweenRoundsGetsItsRuleBack()
+    {
+        var devices = new[] { "FAKE1" };
+        var path = Path.Combine(_dir, "config.json");
+        var fake = FakeAdb(devices, "", homeRefused: null, reverseRefused: "FAKE1", sdk: 22, transportId: "3");
+        File.WriteAllText(path, JsonSerializer.Serialize(new { adbPath = fake, display = new { homeScreen = false, keepAwake = false, followComputerLock = false, openOnConnect = false } }));
+        var store = new ConfigStore(path);
+        Assert.Equal(fake, AdbReverse.FindAdb(store.Get().AdbPath));
+        using var adb = new AdbReverse(store, NullLogger<AdbReverse>.Instance);
+        var ensure = typeof(AdbReverse).GetMethod("Ensure", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        Task Pass() => (Task)ensure.Invoke(adb, [CancellationToken.None])!;
+        const string rule = "-s FAKE1 reverse tcp:8765 tcp:8765";
+
+        await Pass();
+        await Pass();
+        Assert.Equal(1, Calls().Count(c => c == rule)); // same connection: set once
+
+        FakeAdb(devices, "", homeRefused: null, reverseRefused: "FAKE1", sdk: 22, transportId: "4");
+        await Pass();
+        await Pass();
+        Assert.Equal(2, Calls().Count(c => c == rule)); // new connection: set again, once
+        Assert.DoesNotContain("-s FAKE1 reverse --list", Calls());
+    }
+
+    /// <summary>A newer phone that lists no rule for this agent (the adb server restarted, or another agent took tcp:8765)
+    /// gets the rule set again: only Android 5 and 6 rely on what the agent remembers.</summary>
+    [Fact]
+    public async Task ANewerPhoneWhoseRuleIsGoneGetsItBack()
+    {
+        var fake = FakeAdb(["FAKE1"], "", homeRefused: null, sdk: 34);
+        var calls = await RunUntil(fake, new { adbPath = fake, deviceSerial = "FAKE1",
+                display = new { homeScreen = false, keepAwake = false, followComputerLock = false, openOnConnect = false } },
+            null, c => c.Count(x => x == "-s FAKE1 reverse tcp:8765 tcp:8765") >= 2);
+        Assert.Contains("-s FAKE1 reverse --list", calls);
+        Assert.True(calls.Count(x => x == "-s FAKE1 reverse tcp:8765 tcp:8765") >= 2, string.Join(" | ", calls));
     }
 
     [Fact]

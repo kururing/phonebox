@@ -17,6 +17,9 @@ Last updated: 2026-11-20 (PhoneBox 0.9.6).
   sent to Steam once when you save it, then only the SteamID64 is stored. The key is never sent to the phone or logged.
   The activity widget derives its short history from successive polls in memory; it is not written to disk or logged and
   starts empty after an agent restart.
+- **Steam library**: the Steam library widget reads Steam's own files on this computer (the installed games' manifests,
+  `localconfig.vdf` for when each was last played, covers from Steam's library cache, and the game running now) and sends
+  the list and the covers only to your phone. It makes no network connection; nothing is sent to Steam or anyone else.
 - **Last Claude quota reading**: `claude-quota.json` next to the log (usage percentages and reset times, no token),
   so the panel can show the last values after a restart, and `claude-quota-schedule.json` (when the next check may
   run, the last error message and, after Anthropic refused a token, a 16-character hash of that token, never the token
@@ -46,7 +49,33 @@ Last updated: 2026-11-20 (PhoneBox 0.9.6).
   the panel; chat text is never shown, stored or sent. Project labels use the folder basename from Cursor's
   `workspaceStorage/*/workspace.json` `folder` URI (cached about a minute), sent to the phone as the session's project
   name over the same local USB / paired Wi-Fi link as other panel data. Turning the setting off stops the scan.
-- **Claude Code chat titles** (off by default): with Settings â€º Claude Code â€º "Show Claude Code chat titles on the
+- **Antigravity sessions** (off by default; **Settings › General › Antigravity sessions**): while enabled, the agent
+  scans recent `transcript.jsonl` files under `~/.gemini/antigravity/brain` and `~/.gemini/antigravity-cli/brain`
+  (about every 30 seconds for discovery) together with local `annotations/*.pbtxt` metadata and the Antigravity CLI's
+  `history.jsonl` workspace basename. Only step types, statuses, timestamps, model names, tool names and token counters
+  are kept; prompts, replies, thinking and tool arguments are never shown, stored or sent. Titles reach the phone only
+  while **Show Antigravity chat titles on the phone** is also on; otherwise the widget shows the project name or
+  `Antigravity`. Turning the setting off stops the scan.
+- **OpenCode sessions (off by default):** with Settings › General › "Show OpenCode sessions" on, the agent asks
+  OpenCode's own background service — the native one, and the one inside each running WSL distro — for its recent
+  sessions: the same local HTTP API the desktop app uses, authenticated with the password OpenCode wrote to
+  `~/.local/state/opencode/service.json`; that password never leaves the computer. Only session metadata is requested
+  (the folder, title, model, token counters, start and update times and the outcome); prompts, replies and tool
+  arguments are never fetched, and sessions older than three hours are ignored. A stopped WSL distro is never started
+  for this. Titles reach the phone only while Settings › General › "Show OpenCode session titles" is also on;
+  otherwise the widget shows the project folder. The data goes only to your phone over the same local USB / paired
+  Wi-Fi link as other panel data.
+- **OpenCode permission prompts and questions (off by default):** when OpenCode's background service asks for
+  permission, the agent reads the pending request from its local API (`127.0.0.1`, with the password OpenCode wrote
+  to `~/.local/state/opencode/service.json` in a Basic header, over loopback only — it is never sent anywhere else).
+  What goes to the phone is the card's content only: the project, the action (run a command, edit a file…), the
+  command or paths it names, any message OpenCode attached, and the pattern an Allow always would save for the
+  project. The phone's answer (allow once, allow always, deny) is posted back to the same local API. The same card
+  carries OpenCode's agent questions: the question, its choices and whether a typed answer is allowed go to the
+  phone, and the pick or typed answer comes back — nothing else about the conversation is read. Nothing is offered or
+  sent until Settings › General is turned on (or `"phoneApprovals": true` in the `opencode` section of
+  `config.json`); turning it off again stops this entirely.
+- **Claude Code chat titles** (off by default): with Settings › Claude Code › "Show Claude Code chat titles on the
   phone" on, the sessions widget shows each chat's title, the name you gave it or the one Claude Code wrote, which it
   often draws from your first prompt. The agent reads only the title records at the end of the chat's file in
   `~/.claude/projects`, never the prompts, replies or tool arguments, and sends the title only to your phone, like the
@@ -98,9 +127,10 @@ identifies your GitHub account to GitHub.
 | Feature | Where | What is sent |
 |---|---|---|
 | Codex live quota (opt-in) | Off by default until turned on in **Settings › General › AI quotas & CodexBar › Read live Codex quotas with the Codex CLI**, and only while an enabled page shows Codex quotas and fresh CodexBar data is not already active. Runs the local `codex` CLI (`codex app-server`), which contacts its configured OpenAI/ChatGPT endpoints (by default `chatgpt.com` / `api.openai.com`) about every 3 minutes, backing off up to 30 minutes on failure. Turn off by unchecking **Read live Codex quotas with the Codex CLI** | PhoneBox sends only `initialize` metadata and `account/rateLimits/read` over local stdio (no prompt or thread) and never reads or logs credentials; the Codex CLI uses its own sign-in and may refresh and rewrite `~/.codex/auth.json` |
-| Discord widget | `discord.com/api/oauth2/token`, once at login and when the token needs renewing; `cdn.discordapp.com`, once per server icon and avatar shown (the agent fetches them, the phone never contacts Discord; the rest goes through the Discord app on this PC, locally). Turn off in **Settings › General › Discord** | The application's client ID and secret, and the one-time login code or the saved refresh token; for images only the image's id and hash, which Discord already knows |
+| Discord widget | `discord.com/api/oauth2/token`, once at login and when the token needs renewing; `cdn.discordapp.com`, once per server icon and avatar shown (the agent fetches them, the phone never contacts Discord; the rest goes through the Discord app on this PC, locally). Turn off in **Settings › General › Discord** | The application's client ID and secret, and the one-time login code or the saved refresh token; for images only the image's id and hash, which Discord already knows. For favourite servers and channels the names and avatars of the people in voice channels you are not in reach the phone too (read from the Discord app on this PC, kept in memory only) |
 | Steam friends and activity | `api.steampowered.com`, only while Steam is enabled and an enabled page contains either widget. Clear the API key, turn off Steam, or remove both widgets to stop requests | The API key in the request header; your SteamID64 for the friend-list request; your custom profile name as `vanityurl` only when you save it; and friend SteamIDs in player-summary batches. Steam returns names, avatars, presence and public game details. The activity list is built from successive polls and stays in memory only |
 | Steam avatars | `*.steamstatic.com` and `steamcdn-a.akamaihd.net`, only when the agent fetches an avatar shown by either widget. Clear the API key, turn off Steam, or remove both widgets to stop requests | A request to the avatar URL Steam returned (including its image hash); the Web API key and SteamID64 are not sent to these image hosts |
+| Synced lyrics widget | `lrclib.net` (LRCLIB, free and open, no account), off until you turn on a Synced lyrics widget's **Look up lyrics on LRCLIB** (per widget). Then asked by the agent when a song starts, only for a widget on an enabled page with the option on; the phone never contacts it. The exact lookup sends the title, artist, album and length; when it finds nothing (or the song is longer than an hour), a search sends the title and artist only. A song is asked again only once its answer has expired or was dropped from the 100. Answers are kept in memory only, never on disk: an answer is reused for 6 hours for a song that was found and 30 minutes for one that was not, at most 100 songs; an expired answer is dropped the next time any widget asks for lyrics, and all of them when the agent stops; after a failure nothing is asked for a while (1 minute, doubling up to 30, or as long as LRCLIB's Retry-After asks). Turn the option off or remove the widget to stop the requests | The title, artist, album and length of the track playing on this computer, and a `PhoneBox/<version> (+https://github.com/ersinkoc/phonebox)` user agent; nothing about you |
 | GitHub widget | `api.github.com`, through your own GitHub CLI (`gh`) | Whatever `gh` sends with its own sign-in |
 | Hacker News widget (phone) | `hacker-news.firebaseio.com` | Nothing but the request |
 | Exchange rates widget (phone) | `api.frankfurter.dev` | The currencies you chose |
@@ -108,6 +138,7 @@ identifies your GitHub account to GitHub.
 | Internet radio | `*.api.radio-browser.info`, `opml.radiotime.com`, the station's own stream server and logo host | Station searches, the station you play and its logo request |
 | Spotify control | `accounts.spotify.com`, `api.spotify.com` | Your own Spotify app's client ID and the sign-in you approve; the token is saved in `config.json.spotify.json` next to your settings |
 | Spotify queue covers (phone) | `i.scdn.co`, while a Spotify queue widget shows covers. Turn off with the widget's **Show covers** option | The request for each cover image |
+| Plex control (Caldera Amp) | The Plex server address you enter in Settings (which may be on the internet) and the player address (this computer, `127.0.0.1:32500`, by default). The widget's requests are made only while an enabled page shows a Plex queue widget; remove the widget or disable its page to stop them. **Check Plex connection** in Settings sends one check each time you press it, with or without a widget. Clearing the server address or the token stops both | To the server: the token you enter, in an `X-Plex-Token` header, and the requests for its identity and the current play queue. To the player: timeline polls (what it is playing) and the skip command when you tap a queued track, without the token. The addresses and token stay in `config.json`. |
 | Pairing over Wi-Fi without USB | `ersinkoc.github.io` (the page the QR code opens), then your computer | GitHub Pages serves the page and sees your IP address; the pairing details are after `#` in the link, which browsers never send, and the page removes them from the history. The phone then sends the one-time code only to your computer, over TLS pinned to its certificate |
 | Calendars | The iCal addresses you add | The request to that address |
 | Dictation widget | Only while you hold a dictation open (the microphone button is red, at most a minute): the phone's own speech recognizer hears you. On most phones that is Google's, which may send the audio to Google. With the widget's **Recognize on the phone only** option the app uses Android's on-device recognizer, which keeps the audio on the phone; that needs Android 12 or later and the offline language, and on older Android the option refuses to listen rather than fall back. The recognized text goes from the phone to the agent and is typed into the app in front if the widget's **Type the text on the computer** option is on (off by default). Neither the audio nor the text is stored or logged by PhoneBox. Android asks for the microphone the first time the button is tapped; you can take it back in Android's app settings | Google (or your phone's recognizer), only while dictating; nothing with on-device recognition |

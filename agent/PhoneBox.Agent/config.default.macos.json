@@ -17,12 +17,18 @@
 
   // Ping target for the ping metric and the "ping high" rule, every 5 s (empty = off)
   "ping": { "host": "1.1.1.1", "adapters": [] },
-  // Discord widget: talks to the Discord desktop app on this computer. Create an application at discord.com/developers/applications, add the redirect http://127.0.0.1, and enter its client ID and secret (see docs/DISCORD.md)
-  "discord": { "enabled": false, "clientId": null, "clientSecret": null },
+  // Discord widget: talks to the Discord desktop app on this computer. Create an application at discord.com/developers/applications, add the redirect http://127.0.0.1, and enter its client ID and secret (see docs/DISCORD.md). "allowControl" lets shortcuts and custom widgets mute, deafen, leave and join without a Discord widget (off by default)
+  "discord": { "enabled": false, "clientId": null, "clientSecret": null, "allowControl": false },
   // Cursor agent chats on the AI sessions widget (off by default)
   "cursor": { "sessions": false },
+  // Antigravity chats on the AI sessions widget (off by default)
+  "antigravity": { "sessions": false, "shareSessionTitles": false },
   // Live Codex quotas read through the Codex CLI (off by default; Settings › General › AI quotas & CodexBar)
   "codexBar": { "codexLiveQuota": false },
+  // OpenCode permission prompts on the phone: Allow (once or always) and Deny, read from OpenCode's
+  // background service on 127.0.0.1. Off by default: set "phoneApprovals": true (or Settings › General) to let
+  // the phone answer. "shareSessionTitles" puts the session titles on the phone too.
+  "opencode": { "phoneApprovals": false, "sessions": false, "timeoutSec": 90, "alwaysCountdownSec": 10, "watchWsl": false, "shareSessionTitles": false },
   // App console widget (Windows): keys and dial bindings per app, matched by the focused window's process name
   "console": { "profiles": [] },
   // Steam friends widget: enter your SteamID64 and a user Web API key in Settings › General (see docs/STEAM.md)
@@ -33,7 +39,11 @@
 
   // Clock seconds, return to the first page after N idle seconds (0 = never), vibrate on session events, a message when a session finishes,
   // switch pages with the phone's volume keys
-  "display": { "showSeconds": true, "idleReturnSec": 90, "vibrate": true, "finishToast": true, "volumeKeys": true, "pixelShift": false, "controlsTop": false, "idleDimMin": 0, "language": "auto" },
+  "display": { "showSeconds": true, "idleReturnSec": 90, "vibrate": true, "finishToast": true, "volumeKeys": true, "pixelShift": false, "controlsTop": false, "idleDimMin": 0, "nightWhenUnreachable": false, "unreachableNightDelayMin": 5, "language": "auto" },
+
+  // Plex music control (Caldera Amp or another Plex Companion player): the server address and token, and the player address.
+  // None of these go to the phone; the token is sent only to the server, never to the player.
+  "controls": { "plexUrl": null, "plexToken": null, "plexPlayerUrl": "http://127.0.0.1:32500" },
 
   // Photo frame widget: "source" is "folder" or "immich". A folder source shows "folder" (empty = off) and whether subfolders count;
   // an Immich source shows one album ("immichAlbum" is its id) of the server at "immichUrl", read with the API key "immichKey". None of these go to the phone.

@@ -43,13 +43,15 @@ public static class ClaudeHook
             question ? "question" : "permission");
 
         var decision = await approvals.AskAsync(a, aborted);
-        if (decision is null or "skip") return null; // no decision: Claude Code asks in the terminal as usual
+        // "skip" and an OpenCode-style typed answer ("answer") have no Claude Code equivalent: no decision here
+        if (decision is not ("allow" or "always" or "deny")) return null;
         return new
         {
             hookSpecificOutput = new
             {
                 hookEventName = "PermissionRequest",
-                decision = decision == "allow"
+                // "always" (Allow always, an OpenCode answer) has no Claude Code equivalent and allows once like "allow"
+                decision = decision is "allow" or "always"
                     ? (object)new { behavior = "allow" }
                     : new { behavior = "deny", message = "Denied from the PhoneBox panel." },
             },

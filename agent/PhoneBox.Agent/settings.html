@@ -59,6 +59,7 @@ h2 { font-size: 20px; margin: 0 0 4px; }
 /* a widget's options in groups: an option with a "section" starts a new one under a small heading */
 .opt-section { margin: 18px 0 10px; padding-top: 12px; border-top: 1px solid var(--line, #e5e7eb); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
 .field .hint { font-size: 12px; color: var(--muted); }
+#adbFound { overflow-wrap: anywhere; }
 input[type=text], input[type=number], input[type=time], select, textarea {
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; outline: none; min-width: 0;
 }
@@ -99,6 +100,10 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .preview { position: relative; aspect-ratio: 780 / 360; overflow: hidden; border-radius: 10px; background: #000; }
 .preview iframe { position: absolute; left: 0; top: 0; width: 780px; height: 360px; border: 0; transform-origin: 0 0; }
 .phone { width: 100%; max-width: 860px; padding: 14px 18px; border-radius: 28px; background: #06080b; border: 1px solid #22262e; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+/* Match the panel's saved grid coordinates regardless of the interface language. */
+[dir="rtl"] .canvas, [dir="rtl"] .mini { direction: ltr; }
+[dir="rtl"] .canvas > *, [dir="rtl"] .mini > * { direction: rtl; }
+[dir="rtl"] input[type="url"], [dir="rtl"] input[type="number"], [dir="rtl"] code { direction: ltr; unicode-bidi: isolate; }
 .canvas { position: relative; aspect-ratio: 752 / 333; display: grid; grid-template-columns: repeat(12, 1fr); grid-template-rows: repeat(6, 1fr); gap: 6px; touch-action: none; }
 .canvas .cell { border-radius: 6px; background: rgba(255,255,255,.035); }
 .wb { position: relative; z-index: 1; border-radius: 10px; background: #1a2230; border: 1.5px solid #2c3647; color: #e8ecf1; cursor: grab; overflow: hidden; display: flex; container-type: size; }
@@ -116,7 +121,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 .pal-cat { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 700; margin: 10px 0 2px 8px; }
 .pal-cat:first-child { margin-top: 0; }
 input[type=search] { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; outline: none; }
-.pal { display: flex; gap: 10px; align-items: center; text-align: left; padding: 6px 8px; border-radius: 9px; border: 1px solid transparent; background: none; cursor: pointer; }
+.pal { display: flex; gap: 10px; align-items: center; text-align: start; padding: 6px 8px; border-radius: 9px; border: 1px solid transparent; background: none; cursor: pointer; }
 .pal:hover { background: var(--panel-2); border-color: var(--line); }
 .pal-ico { font-size: 20px; width: 28px; text-align: center; }
 .pal b { display: block; font-size: 13px; }
@@ -131,7 +136,7 @@ textarea { width: 100%; resize: vertical; }
 .pair-qr.expired img { opacity: .15; }
 .modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; width: min(1000px, 100%); max-height: 90vh; overflow-y: auto; }
 .tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
-.tpl { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
+.tpl { display: flex; flex-direction: column; gap: 4px; text-align: start; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
 .tpl:hover { border-color: var(--accent); }
 .tpl small { color: var(--muted); font-size: 12px; }
 .mini { aspect-ratio: 2.26; display: grid; grid-template-columns: repeat(12, 1fr); grid-template-rows: repeat(6, 1fr); gap: 2px; background: #06080b; border-radius: 8px; padding: 4px; margin-bottom: 4px; }
@@ -166,14 +171,14 @@ table.items td.val { font-family: Consolas, monospace; font-size: 12px; max-widt
 .phone-row .row { gap: 10px; }
 .phone-pages { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; }
 .cal-row { display: grid; grid-template-columns: 160px minmax(0, 1fr) 44px auto; gap: 8px; align-items: center; margin-bottom: 8px; }
-.feed-row { grid-template-columns: 160px minmax(0, 1fr) auto; }
+.feed-row { grid-template-columns: 140px 150px minmax(0, 1fr) auto; }
 .cam-row { grid-template-columns: 160px minmax(0, 1fr) 80px 80px auto; }
 .console-row { display: grid; grid-template-columns: 160px minmax(0, 1fr) auto; gap: 8px; align-items: start; margin-bottom: 14px; }
 .console-row textarea, .console-row .console-dial { grid-column: 1 / 3; }
 .console-row textarea { font-family: ui-monospace, Consolas, monospace; }
 .console-dial { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .cal-row input[type=color] { width: 44px; height: 34px; padding: 2px; }
-@media (max-width: 700px) { .cal-row { grid-template-columns: 1fr 44px auto; } .feed-row { grid-template-columns: 1fr auto; } .cam-row { grid-template-columns: 1fr 80px 80px auto; } .cal-row .cal-url { grid-column: 1 / -1; grid-row: 2; } }
+@media (max-width: 700px) { .cal-row { grid-template-columns: 1fr 44px auto; } .feed-row { grid-template-columns: 1fr 1fr auto; } .cam-row { grid-template-columns: 1fr 80px 80px auto; } .cal-row .cal-url { grid-column: 1 / -1; grid-row: 2; } }
 
 /* shortcuts */
 .deck { display: grid; grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
@@ -300,7 +305,7 @@ input[type=color] { width: 42px; height: 34px; border: 1px solid var(--line); bo
 
 /* city search */
 .results { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-top: 6px; }
-.results button { text-align: left; border: 0; background: var(--panel); padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.results button { text-align: start; border: 0; background: var(--panel); padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
 .results button:last-child { border-bottom: 0; }
 .results button:hover { background: var(--panel-2); }
 .results small { color: var(--muted); }
@@ -627,6 +632,7 @@ a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items
         <p class="hint" style="margin:0 0 12px" data-i18n="s.feeds.hint">RSS or Atom feeds for the News feeds widget. This computer fetches each one at most every 15 minutes, only while a page shows a News feeds widget; the addresses stay here.</p>
         <div id="feedList"></div>
         <button class="btn sm" id="feedAdd" data-i18n="s.feeds.add">＋ Add a feed</button>
+        <button class="btn sm" id="feedImport" style="margin-left:6px" data-i18n="s.feeds.import">＋ Import feeds (OPML / bulk)</button>
       </div>
 
       <div class="card">
@@ -665,6 +671,8 @@ a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items
           <div class="field"><label data-i18n="s.discord.clientId">Client ID</label><input type="text" data-bind="discord.clientId" autocomplete="off" spellcheck="false"></div>
           <div class="field"><label data-i18n="s.discord.clientSecret">Client secret</label><input type="password" data-bind="discord.clientSecret" autocomplete="off"></div>
         </div>
+        <div class="row" style="margin:12px 0 4px"><label class="switch"><input type="checkbox" data-bind="discord.allowControl" aria-labelledby="discordAllowControlLabel"><span></span></label> <span id="discordAllowControlLabel" data-i18n="s.discord.allowControl">Let shortcuts and custom widgets control Discord, without a Discord widget</span></div>
+        <p class="hint" style="margin:0" data-i18n="s.discord.allowControlHint">For the agent's /api/discord actions: mute, deafen, input mode, leave and join. Off: they work only while a Discord widget with Control on is on an enabled page. On: they work without one. Either way, anything that can call the agent can use them, not only the widget: the paired phone (USB or Wi-Fi) and programs on this computer.</p>
       </div>
 
       <div class="card">
@@ -721,6 +729,8 @@ a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items
         <label class="check"><input type="checkbox" data-bind="display.volumeKeys"> <span data-i18n="s.display.volumeKeys">The phone's volume keys switch pages</span></label>
         <label class="check"><input type="checkbox" data-bind="display.autoBrightness"> <span data-i18n="s.display.autoBrightness">Brightness follows the room (light sensor)</span></label>
         <label class="check"><input type="checkbox" data-bind="display.nightWhenDark"> <span data-i18n="s.display.nightWhenDark">Show the night screen whenever the room is dark</span></label>
+        <label class="check"><input type="checkbox" data-bind="display.nightWhenUnreachable"> <span data-i18n="s.display.nightWhenUnreachable">Show the night screen when the computer is unreachable</span></label>
+        <div class="field" style="max-width:420px"><label data-i18n="s.display.unreachableNightDelay">Minutes before the night screen comes on</label><input type="number" min="1" max="30" data-bind="display.unreachableNightDelayMin" data-type="int"></div>
         <label class="check"><input type="checkbox" data-bind="display.proximityWake"> <span data-i18n="s.display.proximityWake">A hand near the phone wakes the night screen</span></label>
         <label class="check"><input type="checkbox" data-bind="display.controlsTop"> <span data-i18n="s.display.controlsTop">Page dots and the Allow / Deny buttons at the top of the screen</span></label>
       </div>
@@ -766,7 +776,7 @@ a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items
           <span data-i18n-html="s.battery.leadTail">where it comes from: a <b>smart plug in Home Assistant</b> (the phone on its own charger), or two <b>shortcuts</b>, for example
           <code>uhubctl</code> for a USB hub with switchable ports. Without USB power the panel keeps running over Wi-Fi.</span></p>
         <div class="row" style="margin-bottom:12px"><label class="switch"><input type="checkbox" data-bind="charge.enabled"><span></span></label> <span data-i18n="s.battery.keepBetween">Keep the battery between</span>
-          <input type="number" min="5" max="95" data-bind="charge.min" data-type="int" style="width:70px"> % and
+          <input type="number" min="5" max="95" data-bind="charge.min" data-type="int" style="width:70px"> % <span id="chargeRangeAnd">and</span>
           <input type="number" min="10" max="100" data-bind="charge.max" data-type="int" style="width:70px"> %</div>
         <div class="grid2">
           <div class="field"><label data-i18n="s.battery.method">Switch the power with</label><select data-bind="charge.method"><option value="ha" data-i18n="s.battery.methodHa">a Home Assistant switch (smart plug)</option><option value="shortcuts" data-i18n="s.battery.methodShortcuts">two shortcuts (power on / power off)</option></select></div>
@@ -785,6 +795,13 @@ a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items
       </div>
 
       <div class="card">
+        <h3 data-i18n="s.antigravity.title">Antigravity sessions</h3>
+        <p class="hint" style="margin:0 0 12px" data-i18n="s.antigravity.hint">Show recent Antigravity chats on the AI sessions widget (off by default). Only step metadata and token counters are kept; prompts, replies and tool arguments are never shown, stored or sent.</p>
+        <div class="row" style="margin-bottom:8px"><label class="switch"><input type="checkbox" data-bind="antigravity.sessions" aria-labelledby="antigravitySessionsLabel"><span></span></label> <span id="antigravitySessionsLabel" data-i18n="s.antigravity.sessions">Show Antigravity sessions</span></div>
+        <label class="check"><input type="checkbox" data-bind="antigravity.shareSessionTitles"> <span data-i18n="s.antigravity.shareSessionTitles">Show Antigravity chat titles on the phone (Antigravity draws them from the conversation)</span></label>
+      </div>
+
+      <div class="card">
         <h3 data-i18n="s.approvals.title">AI coding agent permission prompts</h3>
         <p class="hint" style="margin:0 0 12px" data-i18n-html="s.approvals.hint">When Codex or Claude Code asks for permission, the phone shows the request with <b>Allow</b> and <b>Deny</b>. Install the hook for each agent you use; existing hook files are preserved and backed up.</p>
         <div class="row" style="margin-bottom:8px"><b style="min-width:92px" data-i18n="s.approvals.codex">Codex</b><button class="btn" id="codexHookBtn" data-i18n="s.claude.installHook">Install hook</button><span class="hint" id="codexHookState"></span></div>
@@ -795,6 +812,14 @@ a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items
         <label class="check"><input type="checkbox" data-bind="claude.onlyWhenAway"> <span data-i18n="s.claude.onlyWhenAway">Only when I am away from the PC (no keyboard or mouse for a minute)</span></label>
         <label class="check"><input type="checkbox" data-bind="claude.shareConversation"> <span data-i18n="s.claude.shareConversation">Show the conversation on the phone (tap a Claude Code session to see its recent messages and steps; these are your prompts and Claude's replies, sent only to your phone)</span></label>
         <div class="field" style="max-width:260px;margin-top:12px"><label data-i18n="s.claude.timeout">Seconds to answer before the terminal takes over</label><input type="number" min="10" max="3600" data-bind="claude.timeoutSec" data-type="int"></div>
+
+        <div class="row" style="margin:14px 0 4px"><b style="min-width:92px">OpenCode</b></div>
+        <p class="hint" style="margin:-2px 0 12px 100px" data-i18n="s.opencode.hint">OpenCode permission prompts and agent questions reach the phone while its background service is running. Off until you turn it on here. Allow always saves the requested pattern for the project, so it arms only after a short countdown.</p>
+        <div class="row" style="margin-bottom:8px"><label class="switch"><input type="checkbox" data-bind="opencode.phoneApprovals"><span></span></label> <span data-i18n="s.opencode.askOnPhone">Ask on the phone</span></div>
+        <div class="row" style="margin-bottom:8px"><label class="switch"><input type="checkbox" data-bind="opencode.sessions"><span></span></label> <span data-i18n="s.opencode.sessions">Show OpenCode sessions</span></div>
+        <label class="check"><input type="checkbox" data-bind="opencode.shareSessionTitles"> <span data-i18n="s.opencode.shareSessionTitles">Show OpenCode session titles on the phone (OpenCode draws them from the conversation)</span></label>
+        <div class="row" style="margin-bottom:8px"><label class="switch"><input type="checkbox" data-bind="opencode.watchWsl"><span></span></label> <span data-i18n="s.opencode.watchWsl">Also watch OpenCode in WSL</span></div>
+        <div class="field" style="max-width:260px"><label data-i18n="s.opencode.countdown">Seconds before Allow always can be pressed (0 = at once)</label><input type="number" min="0" max="60" data-bind="opencode.alwaysCountdownSec" data-type="int"></div>
       </div>
 
       <div class="card">
@@ -906,6 +931,17 @@ a.btn { text-decoration: none; color: inherit; display: inline-flex; align-items
 <div class="toast" id="toast"></div>
 <div class="modal" id="modal" hidden><div class="modal-box"><div id="modalBody"></div><div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn" id="modalClose" data-i18n="s.cancel">Cancel</button></div></div></div>
 
+<script src="../panel/locale-existing.js"></script>
+<script src="../panel/locale-tr.js"></script>
+<script src="../panel/locale-ja.js"></script>
+<script src="../panel/locale-ko.js"></script>
+<script src="../panel/locale-id.js"></script>
+<script src="../panel/locale-th.js"></script>
+<script src="../panel/locale-uk.js"></script>
+<script src="../panel/locale-hi.js"></script>
+<script src="../panel/locale-cs.js"></script>
+<script src="../panel/locale-ar.js"></script>
+<script src="../panel/locale-zh-Hant.js"></script>
 <script src="../panel/i18n.js"></script>
 <script src="../panel/appearance.js"></script>
 <script>
@@ -1360,7 +1396,7 @@ function renderPageEditor() {
           icon('home', 'm'), isHome(p) ? t('s.js.homePage') : t('s.js.makeHome')),
         h('label', { class: 'hint', title: t('s.js.backHomeAfterHint') }, t('s.js.backHomeAfter'),
           h('select', { onchange: (e) => { p.idleSec = e.target.value === '' ? null : +e.target.value; changed(); } },
-            ...[['', `default (${fmtIdle(cfg.display.idleReturnSec ?? 90)})`], ['0', 'never'], ['30', '30 s'], ['60', '1 min'], ['120', '2 min'], ['300', '5 min'], ['900', '15 min'], ['3600', '1 hour']]
+            ...[['', `${tc('default')} (${fmtIdle(cfg.display.idleReturnSec ?? 90)})`], ['0', tc('never')], ['30', '30 s'], ['60', '1 min'], ['120', '2 min'], ['300', '5 min'], ['900', '15 min'], ['3600', '1 hour']]
               .map(([v, l]) => h('option', { value: v, selected: String(p.idleSec ?? '') === v }, l)))),
         h('button', { class: 'btn sm danger', disabled: cfg.pages.length === 1, onclick: () => {
           if (!confirm(t('s.js.deletePageConfirm', { title: p.title }))) return;
@@ -1394,17 +1430,24 @@ function setStage(mode) {
   $('canvas').hidden = live;
   $('previewBox').hidden = !live;
   $('pageEditor').classList.toggle('live', live);
-  $('stageHint').textContent = live
-    ? 'The real panel with your unsaved changes and live data: tap and swipe it like the phone. Switch back to Layout to move widgets.'
-    : '';
+  updateStageText();
   if (live && !previewFrame) {
-    previewFrame = h('iframe', { src: '../panel/?preview=1', title: 'Live preview of the panel' });
+    previewFrame = h('iframe', { src: '../panel/?preview=1' });
+    updateStageText();
     $('previewBox').appendChild(previewFrame);
     const fit = () => { previewFrame.style.transform = `scale(${$('previewBox').clientWidth / 780})`; };
     new ResizeObserver(fit).observe($('previewBox'));
     fit();
   }
   if (live) queuePreview();
+}
+
+function updateStageText() {
+  const translate = window.PhoneBoxI18n.tc;
+  $('stageHint').textContent = stageMode === 'live'
+    ? translate('The real panel with your unsaved changes and live data: tap and swipe it like the phone. Switch back to Layout to move widgets.')
+    : '';
+  if (previewFrame) previewFrame.title = translate('Live preview of the panel');
 }
 
 function sendPreview() {
@@ -1930,6 +1973,7 @@ function optionField(w, o, onValChange) {
         ...cfg.shortcuts.map((s) => h('option', { value: s.id, selected: s.id === v }, plain(`${s.icon} ${s.label}`) || s.id))),
         h('span', { class: 'hint' }, t('s.js.newShortcutsId')));
     case 'ha-items': return haItemsEditor(w, o, set);
+    case 'steam-games': return steamGamesEditor(w, o, set);
     case 'shortcuts': {
       const cur = () => { const x = optVal(w, o); return Array.isArray(x) ? x : []; };
       return field(h('div', { class: 'opts' }, ...cfg.shortcuts.map((s) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: cur().includes(s.id), onchange: (e) => {
@@ -1940,6 +1984,27 @@ function optionField(w, o, onValChange) {
       return field(h('input', { type: 'text', value: v ?? '', oninput: (e) => set(o.key, e.target.value) }),
         w.type === 'push' && o.key === 'key' ? h('span', { class: 'hint' }, t('s.js.pushHint')) : null);
   }
+}
+
+// Steam library: tick the favorite games, read from Steam's files on this computer when the editor opens. They come
+// first on the phone in the order they were ticked; a favorite that is no longer installed stays until it is unticked.
+function steamGamesEditor(w, o, set) {
+  const cur = () => { const x = optVal(w, o); return Array.isArray(x) ? x.map(String) : []; };
+  const box = h('div', { class: 'opts' }, h('span', { class: 'hint' }, t('w.loading')));
+  const draw = (games) => {
+    const names = new Map(games.map((g) => [g.id, g.name]));
+    const ids = [...games.map((g) => g.id), ...cur().filter((id) => !names.has(id))];
+    if (!ids.length) { box.replaceChildren(h('span', { class: 'hint' }, t('w.steamlib.empty'))); return; }
+    box.replaceChildren(...ids.map((id) => h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: cur().includes(id), onchange: (e) => {
+      const rest = cur().filter((x) => x !== id);
+      set(o.key, e.target.checked ? [...rest, id] : rest);
+    } }), names.get(id) ?? `${t('s.js.unavailable')} ${id}`)));
+  };
+  const load = () => fetch('/api/steam/games').then((r) => (r.ok ? r.json() : Promise.reject()))
+    .then((games) => draw(Array.isArray(games) ? games : []))
+    .catch(() => box.replaceChildren(h('span', { class: 'hint' }, t('w.steamlib.notFound'))));
+  load();
+  return h('div', { class: 'field' }, h('label', {}, o.label), box, h('button', { class: 'btn sm', onclick: load }, t('s.js.refresh')));
 }
 
 // Home Assistant widget: one row per entity (id, display name, icon, what to show, whether the phone may switch it).
@@ -2036,7 +2101,7 @@ function openTemplates(index) {
     closeModal(); renderPages(); changed();
   };
   $('modalBody').replaceChildren(
-    h('h3', {}, index == null ? 'New page' : `Replace the widgets of "${cfg.pages[index].title}"`),
+    h('h3', {}, index == null ? tc('New page') : tc('Replace the widgets of "{title}"').replace('{title}', () => cfg.pages[index].title)),
     h('div', { class: 'tpl-grid' },
       h('button', { class: 'tpl', onclick: () => pick(null) }, h('div', { class: 'mini empty-mini' }, icon('plus')), h('b', {}, t('s.js.blankPage')), h('small', {}, t('s.js.blankPageHint'))),
       ...catalog.templates.map((t) => h('button', { class: 'tpl', onclick: () => pick(t) }, miniMap(t.widgets), h('b', {}, rich(`${t.icon} ${t.title}`)), h('small', {}, t.desc)))));
@@ -2065,22 +2130,22 @@ async function pairOverWifi() {
   const left = h('b', {}, '');
   const pairBox = h('div', { class: 'pair-qr' },
     h('b', {}, t('s.wifi.step2')),
-    h('img', { src: svg(r.qr), alt: 'Pairing QR code' }),
+    h('img', { src: svg(r.qr), alt: t('s.pair.qr') }),
     h('small', { class: 'hint' }, t('s.wifi.step2Hint'), h('b', {}, r.check), '. ', left));
   $('modalBody').replaceChildren(
-    h('h3', {}, `Pair a phone with ${r.pc}`),
+    h('h3', {}, t('s.pair.title', { pc: r.pc })),
     h('p', { class: 'hint', style: 'margin:0' }, t('s.wifi.noCableHint')),
     h('div', { class: 'pair-qrs' },
       h('div', { class: 'pair-qr' },
         h('b', {}, t('s.wifi.step1')),
-        h('img', { src: svg(r.appQr), alt: 'QR code of the app download' }),
+        h('img', { src: svg(r.appQr), alt: t('s.pair.downloadQr') }),
         h('small', { class: 'hint' }, t('s.wifi.step1Hint'))),
       pairBox),
     h('p', { class: 'hint', style: 'margin:0' }, r.hosts.length
-      ? `The phone will connect to ${r.hosts.join(', ')} on port ${r.port}. The code works once, for 5 minutes; the key itself is not in the QR code.`
-      : 'No LAN or Tailscale address was found on this computer, so the phone has nothing to connect to.'),
+      ? t('s.pair.hosts', { hosts: r.hosts.join(', '), port: r.port })
+      : t('s.pair.noHosts')),
     h('div', { class: 'row', style: 'margin-top:8px' },
-      h('button', { class: 'btn sm', onclick: () => { navigator.clipboard?.writeText(r.link); toast(t('s.js.pairLinkCopied')); } }, 'Copy the pairing link')));
+      h('button', { class: 'btn sm', onclick: () => { navigator.clipboard?.writeText(r.link); toast(t('s.js.pairLinkCopied')); } }, t('s.pair.copy'))));
   const tick = async () => {
     try {
       const s = await (await fetch('/api/pair/status')).json();
@@ -2089,8 +2154,8 @@ async function pairOverWifi() {
     } catch (_) { }
     if (mine !== pairAttempt) return;
     const ms = r.expiresAt - Date.now();
-    if (ms <= 0) { left.textContent = 'Expired: close and start again.'; pairBox.classList.add('expired'); clearInterval(timer); return; }
-    left.textContent = `Expires in ${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}.`;
+    if (ms <= 0) { left.textContent = t('s.pair.expired'); pairBox.classList.add('expired'); clearInterval(timer); return; }
+    left.textContent = t('s.pair.expires', { time: `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}` });
   };
   const timer = setInterval(tick, 1000);
   tick();
@@ -2327,19 +2392,176 @@ async function renderNetAdapters() {
     a.auto ? h('small', { style: 'color:var(--muted)' }, ' · ' + t('s.net.auto')) : '')));
 }
 // ---------------------------------------------------------------- news feeds
+function parseFeedsInput(text, defaultCategory = '') {
+  const list = [];
+  if (text.includes('<opml') || text.includes('<outline')) {
+    try {
+      const doc = new DOMParser().parseFromString(text, 'text/xml');
+      const outlines = doc.querySelectorAll('outline[xmlUrl], outline[xmlurl]');
+      outlines.forEach((o) => {
+        const url = (o.getAttribute('xmlUrl') || o.getAttribute('xmlurl') || '').trim();
+        if (!url) return;
+        const name = (o.getAttribute('title') || o.getAttribute('text') || '').trim();
+        let cat = '';
+        let p = o.parentElement;
+        while (p && p.tagName.toLowerCase() === 'outline') {
+          const pTitle = (p.getAttribute('title') || p.getAttribute('text') || '').trim();
+          if (pTitle) { cat = pTitle; break; }
+          p = p.parentElement;
+        }
+        list.push({ name, url, category: cat || defaultCategory || '' });
+      });
+      if (list.length > 0) return list;
+    } catch (_) {}
+  }
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+  for (const line of lines) {
+    let parts;
+    if (line.includes('|')) {
+      parts = line.split('|').map((p) => p.trim());
+    } else if (line.includes('\t')) {
+      parts = line.split('\t').map((p) => p.trim());
+    } else if (line.includes(',')) {
+      parts = line.match(/(?:^|,)("(?:[^"]|"")*"|[^,]*)/g)?.map((s) => s.replace(/^,/, '').trim().replace(/^"|"$/g, '').replace(/""/g, '"').trim()) || line.split(',').map((p) => p.trim());
+    } else {
+      parts = [line.trim()];
+    }
+    let category = defaultCategory || '', name = '', url = '';
+    if (parts.length >= 3) {
+      category = parts[0] || defaultCategory || ''; name = parts[1]; url = parts[2];
+    } else if (parts.length === 2) {
+      if (parts[0].startsWith('http://') || parts[0].startsWith('https://')) {
+        url = parts[0]; name = parts[1];
+      } else if (parts[1].startsWith('http://') || parts[1].startsWith('https://')) {
+        name = parts[0]; url = parts[1];
+      }
+    } else {
+      url = parts[0];
+    }
+    if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) continue;
+    list.push({ name, url, category });
+  }
+  return list;
+}
+
+function openFeedImportModal() {
+  const fileInput = h('input', { type: 'file', accept: '.opml,.xml,.txt', style: 'display:none' });
+  const fileBtn = h('button', { class: 'btn sm', onclick: () => fileInput.click() }, t('s.feeds.chooseFile'));
+  const fileLabel = h('span', { class: 'hint', style: 'margin-left:8px' }, t('s.feeds.noFileChosen'));
+  const countLabel = h('span', { class: 'hint', style: 'margin-left:auto;font-weight:500;' }, '');
+  const textarea = h('textarea', {
+    placeholder: t('s.feeds.pastePlaceholder'),
+    style: 'width:100%;height:140px;margin-top:8px;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;font-size:12px;padding:8px;border-radius:8px;background:var(--bg);border:1px solid var(--border);color:inherit;'
+  });
+  const skipExisting = h('input', { type: 'checkbox', checked: true });
+  const defaultCategory = h('input', { type: 'text', placeholder: t('s.feeds.categoryPlaceholder'), maxlength: '40', style: 'max-width:180px;' });
+
+  const updateCount = () => {
+    const raw = textarea.value.trim();
+    if (!raw) { countLabel.textContent = ''; return; }
+    const feeds = parseFeedsInput(raw, defaultCategory.value.trim());
+    countLabel.textContent = feeds.length > 0 ? t('s.feeds.foundCount', { count: feeds.length }) : '';
+  };
+
+  textarea.oninput = updateCount;
+  defaultCategory.oninput = updateCount;
+
+  fileInput.onchange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    fileLabel.textContent = file.name;
+    const reader = new FileReader();
+    reader.onload = () => { textarea.value = reader.result; updateCount(); };
+    reader.readAsText(file);
+  };
+
+  const normUrl = (u) => {
+    try {
+      const parsed = new URL((u || '').trim());
+      parsed.hash = '';
+      return parsed.href;
+    } catch (_) {
+      return (u || '').trim();
+    }
+  };
+
+  const doImport = () => {
+    const raw = textarea.value.trim();
+    if (!raw) { toast(t('s.feeds.chooseFileOrPaste'), true); return; }
+    const feeds = parseFeedsInput(raw, defaultCategory.value.trim());
+    if (!feeds.length) { toast(t('s.feeds.noFeedsFound'), true); return; }
+    cfg.feeds ??= [];
+    const MAX_FEEDS = 30;
+    const existingUrls = new Set(cfg.feeds.map((f) => normUrl(f.url)));
+    let added = 0, updated = 0, skippedLimit = 0;
+    for (const f of feeds) {
+      const key = normUrl(f.url);
+      if (existingUrls.has(key)) {
+        if (!skipExisting.checked) {
+          const target = cfg.feeds.find((x) => normUrl(x.url) === key);
+          if (target) {
+            if (f.name) target.name = f.name;
+            if (f.category) target.category = f.category;
+            updated++;
+          }
+        }
+      } else {
+        if (cfg.feeds.length >= MAX_FEEDS) {
+          skippedLimit++;
+          continue;
+        }
+        cfg.feeds.push(f);
+        existingUrls.add(key);
+        added++;
+      }
+    }
+    closeModal();
+    renderFeeds();
+    changed();
+    const catCount = new Set(cfg.feeds.map((f) => f.category).filter(Boolean)).size;
+    const limitMsg = skippedLimit ? t('s.feeds.skippedLimitToast', { count: skippedLimit, max: MAX_FEEDS }) : '';
+    const toastMsg = updated
+      ? t('s.feeds.importedUpdatedToast', { added, updated, categories: catCount })
+      : t('s.feeds.importedToast', { added, categories: catCount });
+    toast(toastMsg + limitMsg);
+  };
+
+  $('modalBody').replaceChildren(
+    h('h3', {}, t('s.feeds.importTitle')),
+    h('p', { class: 'hint', style: 'margin:0 0 12px' }, t('s.feeds.importHint')),
+    h('div', { style: 'display:flex;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:4px;' }, fileBtn, fileLabel, fileInput, countLabel),
+    textarea,
+    h('div', { style: 'display:flex;flex-direction:column;gap:8px;margin:12px 0;' },
+      h('label', { class: 'check' }, skipExisting, t('s.feeds.skipExisting')),
+      h('div', { style: 'display:flex;gap:8px;align-items:center;' },
+        h('span', { class: 'hint' }, t('s.feeds.fallbackCategory')), defaultCategory
+      )
+    )
+  );
+
+  $('feedImportDo')?.remove();
+  const importBtn = h('button', { id: 'feedImportDo', class: 'btn primary', onclick: doImport }, t('s.feeds.doImport'));
+  $('modalClose').before(importBtn);
+  onModalClose = () => { importBtn.remove(); };
+
+  $('modal').hidden = false;
+}
+
 function renderFeeds() {
   cfg.feeds ??= [];
   $('feedList').replaceChildren(...cfg.feeds.map((f, i) => h('div', { class: 'cal-row feed-row' },
-    h('input', { type: 'text', value: f.name || '', maxlength: '60', placeholder: 'Name, e.g. News', oninput: (e) => { f.name = e.target.value; changed(); } }),
-    h('input', { type: 'text', class: 'cal-url', value: f.url || '', placeholder: 'https://example.com/feed.xml', spellcheck: 'false',
+    h('input', { type: 'text', value: f.category || '', maxlength: '40', placeholder: t('s.feeds.categoryPlaceholder'), title: t('s.feeds.categoryTitle'), oninput: (e) => { f.category = e.target.value; changed(); } }),
+    h('input', { type: 'text', value: f.name || '', maxlength: '60', placeholder: t('s.feeds.namePlaceholder'), title: t('s.feeds.nameTitle'), oninput: (e) => { f.name = e.target.value; changed(); } }),
+    h('input', { type: 'text', class: 'cal-url', value: f.url || '', placeholder: t('s.feeds.urlPlaceholder'), spellcheck: 'false', title: t('s.feeds.urlTitle'),
       oninput: (e) => { f.url = e.target.value.trim(); changed(); } }),
     h('button', { class: 'btn sm danger', onclick: () => { cfg.feeds.splice(i, 1); renderFeeds(); changed(); } }, t('s.js.remove')))));
 }
 $('feedAdd').onclick = () => {
   cfg.feeds ??= [];
-  cfg.feeds.push({ name: '', url: '' });
+  cfg.feeds.push({ name: '', url: '', category: '' });
   renderFeeds(); changed();
 };
+$('feedImport').onclick = openFeedImportModal;
 // ---------------------------------------------------------------- cameras
 // Ids are made here, not from the name: a widget points at its camera by id, so renaming one keeps its widgets.
 const cameraId = () => Array.from({ length: 12 }, () => '0123456789abcdefghijklmnopqrstuvwxyz'[Math.floor(Math.random() * 36)]).join('');
@@ -2452,9 +2674,9 @@ function ruleCard(r, i) {
       }
       set('op', v === 'on' ? null : v, true);
     }),
-    r.op === 'stale' ? h('input', { type: 'number', min: 1, max: 86400, style: 'width:90px', value: r.arg ?? '60', oninput: (e) => set('arg', e.target.value || null) }) : r.op ? text('arg', 'value', '') : null,
+    r.op === 'stale' ? h('input', { type: 'number', min: 1, max: 86400, style: 'width:90px', value: r.arg ?? '60', oninput: (e) => set('arg', e.target.value || null) }) : r.op ? text('arg', tl('value'), '') : null,
     r.op === 'stale' ? h('span', { class: 'hint' }, tl('seconds')) : null);
-  if (trig.value) cond.push(h('input', { type: 'number', min: 0, style: 'width:90px', value: r.value ?? trig.def, oninput: (e) => set('value', e.target.value === '' ? null : +e.target.value) }), h('span', { class: 'hint' }, trig.value));
+  if (trig.value) cond.push(h('input', { type: 'number', min: 0, style: 'width:90px', value: r.value ?? trig.def, oninput: (e) => set('value', e.target.value === '' ? null : +e.target.value) }), h('span', { class: 'hint' }, tl(trig.value)));
 
   const act = [];
   if (r.then === 'goto') act.push(h('select', { onchange: (e) => set('page', e.target.value) },
@@ -2474,7 +2696,7 @@ function ruleCard(r, i) {
       const cur = days.length ? days : DAYS.map(([x]) => x);
       const next = cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d];
       set('days', next.length === 7 || !next.length ? null : DAYS.map(([x]) => x).filter((x) => next.includes(x)).join(','), true);
-    } }, l)));
+    } }, tl(l))));
   const opts = h('details', { class: 'ropts', open: !!(r.days || r.during || r.forSec || r.cooldownMin || (r.priority ?? 5) !== 5 || r.countdownSec != null) },
     h('summary', {}, t('s.r.options'), h('span', { class: 'hint' }, ' ' + ruleSummary(r))),
     h('div', { class: 'line' }, h('b', {}, t('s.r.only')), dayBtns, h('span', { class: 'hint' }, t('s.r.between')), text('during', t('s.r.allDay'))),
@@ -2504,7 +2726,7 @@ function ruleCard(r, i) {
 
 function ruleSummary(r) {
   const parts = [];
-  if (r.days) parts.push(r.days.split(',').map((d) => d[0].toUpperCase() + d.slice(1, 2)).join(' '));
+  if (r.days) parts.push(r.days.split(',').map(d => tl(DAYS.find(([id]) => id === d)?.[1] || d)).join(' '));
   if (r.during) parts.push(r.during);
   if (r.forSec) parts.push(t('s.r.afterSec', { n: r.forSec }));
   if (r.cooldownMin) parts.push(t('s.r.restMin', { n: r.cooldownMin }));
@@ -2556,7 +2778,7 @@ async function pollCharge() {
     const age = p ? Math.round((Date.now() - p.at) / 1000) : null;
     $('chargeState').replaceChildren(...(p
       ? [`Phone: ${p.level}% `, ...(p.plugged ? [icon('zap', 'm'), 'charging'] : ['on battery']), ` (${age < 90 ? 'just now' : Math.round(age / 60) + ' min ago'})`]
-      : ['No report from the phone yet']),
+      : [tc('No report from the phone yet')]),
       s.power ? ` · power ${s.power}` : '', s.error ? ` · ${s.error}` : '');
   } catch (_) {}
 }
@@ -2581,12 +2803,12 @@ function renderWebhooks(lan) {
   $('whExamples').replaceChildren(...ex.map(([label, c]) => h('div', { class: 'ex' }, h('span', {}, label), h('code', { class: 'cmdline', title: t('s.wh.clickToCopy'), onclick: () => { navigator.clipboard?.writeText(c); toast(t('s.wh.copied')); } }, c))));
   $('whLan').replaceChildren(host
     ? h('div', {}, h('p', { class: 'hint', style: { marginTop: 0 } }, t('s.wh.lanHint')),
-      h('div', { class: 'row', style: { gap: '8px', margin: '0 0 8px' } }, h('code', {}, token ? token.slice(0, 6) + '…' : '(generated on save)'),
+      h('div', { class: 'row', style: { gap: '8px', margin: '0 0 8px' } }, h('code', {}, token ? token.slice(0, 6) + '…' : tc('(generated on save)')),
         h('button', { class: 'btn sm', disabled: !token, onclick: () => { navigator.clipboard?.writeText(token); toast(t('s.js.webhookKeyCopied')); } }, t('s.wh.copyKey')),
         h('button', { class: 'btn sm', onclick: () => { cfg.lan = { ...(cfg.lan || {}), webhookToken: '' }; changed(); toast(t('s.js.webhookKeyOnSave')); } }, t('s.k.newKey'))),
-      h('code', { class: 'cmdline', onclick: () => { navigator.clipboard?.writeText(`curl -k -X POST ${host}/api/push/temperature -H "Authorization: Bearer ${token}" -d 21.5`); toast('Copied'); } },
+      h('code', { class: 'cmdline', onclick: () => { navigator.clipboard?.writeText(`curl -k -X POST ${host}/api/push/temperature -H "Authorization: Bearer ${token}" -d 21.5`); toast(t('s.wh.copied')); } },
         `curl -k -X POST ${host}/api/push/temperature -H "Authorization: Bearer ${token.slice(0, 6)}…" -d 21.5`))
-    : h('p', { class: 'hint', style: { margin: 0 } }, 'Turn on "Wi-Fi & Tailscale" in General to accept webhooks from other machines too. From this PC no token is needed.'));
+    : h('p', { class: 'hint', style: { margin: 0 } }, tc('Turn on "Wi-Fi & Tailscale" in General to accept webhooks from other machines too. From this PC no token is needed.')));
 }
 
 async function loadPushed() {
@@ -2596,7 +2818,7 @@ async function loadPushed() {
     const items = Object.entries(r.items || {}).sort((a, b) => b[1].at - a[1].at);
     $('whItems').replaceChildren(...(items.length ? items.map(([k, v]) => h('tr', {},
       h('td', {}, h('code', {}, k)), h('td', { class: 'val' }, JSON.stringify(v.data)), h('td', { class: 'hint' }, new Date(v.at).toLocaleString()),
-      h('td', {}, h('button', { class: 'btn sm danger', onclick: async () => { await fetch('/api/push/' + encodeURIComponent(k), { method: 'DELETE' }); loadPushed(); } }, 'Delete'))))
+      h('td', {}, h('button', { class: 'btn sm danger', onclick: async () => { await fetch('/api/push/' + encodeURIComponent(k), { method: 'DELETE' }); loadPushed(); } }, t('s.r.del')))))
       : [h('tr', {}, h('td', { colspan: 4, class: 'hint' }, t('s.wh.nothingPushed')))]));
   } catch (_) {}
 }
@@ -2675,8 +2897,8 @@ function renderEditor() {
       h('div', { class: 'row', style: { gap: '6px' } },
         h('button', { class: 'btn sm', onclick: () => moveKey(-1), disabled: selKey === 0 }, t('s.js.earlier')),
         h('button', { class: 'btn sm', onclick: () => moveKey(1), disabled: selKey === cfg.shortcuts.length - 1 }, t('s.js.later')),
-        h('button', { class: 'btn sm', onclick: testKey }, icon('play', 'm'), 'Test'),
-        h('button', { class: 'btn sm danger', onclick: delKey }, 'Delete'))),
+        h('button', { class: 'btn sm', onclick: testKey }, icon('play', 'm'), t('s.test')),
+        h('button', { class: 'btn sm danger', onclick: delKey }, t('s.r.del')))),
     h('div', { class: 'grid2' },
       h('div', {},
         text('label', t('s.k.label'), t('s.k.labelHint')),
@@ -2685,7 +2907,7 @@ function renderEditor() {
         customIconField(s),
         h('div', { class: 'field' }, h('label', {}, t('s.z.colour')), h('div', { class: 'row' }, colorIn), sw)),
       h('div', {}, ...actionFields(s, upd, text, cmdIn, preset),
-        h('div', { class: 'field' }, h('label', {}, 'Id'), h('code', {}, s.id || t('s.k.genOnSave'))))));
+        h('div', { class: 'field' }, h('label', {}, tc('Id')), s.id ? h('code', {}, s.id) : h('span', { class: 'hint' }, t('s.k.genOnSave'))))));
 }
 
 // A custom icon image (PNG, WEBP or SVG) overrides both the emoji and the auto-detected program icon on the phone.
@@ -2773,9 +2995,10 @@ function actionFields(s, upd, text, cmdIn, preset) {
       text('args', t('s.k.arguments'), osName === 'windows' ? t('s.k.argsPlaceholderWindows') : t('s.k.argsPlaceholderUnix')),
       text('cwd', t('s.k.workingFolder'), t('s.k.optional')));
   } else if (kind === 'keys') {
-    fields.push(text('args', t('s.k.keys'), 'e.g. ctrl+shift+m', 'Combine with +, several in a row with commas. Ctrl, Shift, Alt, Win (Cmd on a Mac), letters, digits, F1–F24, enter, tab, esc, space, arrows, home, end, pageup, pagedown, delete, numpad0–numpad9, numpadenter, numpadadd, numpadsubtract, numpadmultiply, numpaddivide, numpaddecimal, playpause, next, prev, mute, volumeup, volumedown.'));
+    fields.push(text('args', t('s.k.keys'), 'e.g. ctrl+shift+m', tc('Combine with +, several in a row with commas. Ctrl, Shift, Alt, Win (Cmd on a Mac), letters, digits, F1–F24, enter, tab, esc, space, arrows, home, end, pageup, pagedown, delete, numpad0–numpad9, numpadenter, numpadadd, numpadsubtract, numpadmultiply, numpaddivide, numpaddecimal, playpause, next, prev, mute, volumeup, volumedown.')));
   } else if (kind === 'text') {
-    fields.push(h('div', { class: 'field' }, h('label', {}, t('s.k.textToType')), area(s.args || '', 'Typed into whatever window has the focus', 3, (e) => upd('args', e.target.value, false))));
+    fields.push(h('div', { class: 'field' }, h('label', {}, t('s.k.textToType')), area(s.args || '', tc('Typed into whatever window has the focus'), 3, (e) => upd('args', e.target.value, false)),
+      h('span', { class: 'hint' }, t('s.k.textHint')), h('span', { class: 'hint' }, t('s.k.clipboardWarn'))));
   } else if (kind === 'cycle') {
     // each tap runs the next key of the list; the key on the phone shows the one that ran last
     const choices = cfg.shortcuts.filter((o) => o !== s && o.id);
@@ -2791,7 +3014,7 @@ function actionFields(s, upd, text, cmdIn, preset) {
   } else {
     fields.push(h('div', { class: 'field' }, h('label', {}, t('s.k.steps')),
       area((s.steps || []).join('\n'), 'keys:ctrl+c\nwait:200\ntext:Hello\nshortcut:terminal', 6, (e) => upd('steps', e.target.value.split('\n').map((x) => x.trim()).filter(Boolean), false)),
-      h('span', { class: 'hint' }, t('s.k.macroHint'))));
+      h('span', { class: 'hint' }, t('s.k.macroHint')), h('span', { class: 'hint' }, t('s.k.clipboardWarn'))));
   }
   if (osName === 'macos' && kind !== 'run' && kind !== 'cycle') fields.push(h('p', { class: 'hint' }, t('s.k.macosPermission')));
   if (osName === 'linux' && kind !== 'run' && kind !== 'cycle') fields.push(h('p', { class: 'hint' }, t('s.k.linuxNeedsXdotool')));
@@ -2802,7 +3025,7 @@ function actionFields(s, upd, text, cmdIn, preset) {
     isMute ? t('s.k.toggleLabelMute') : t('s.k.toggleLabel')));
   if (s.toggle && !isMute) {
     fields.push(text('stateKey', t('s.k.stateKey'), 'e.g. teams-muted',
-      'A value pushed to /api/push/<key> (true / on / 1 = on). Without it the phone shows the state after each tap.'));
+      tc('A value pushed to /api/push/<key> (true / on / 1 = on). Without it the phone shows the state after each tap.')));
     if (kind === 'run') fields.push(text('offCmd', t('s.cd.offCmdPlaceholder'), t('s.cd.offCmdHint')), text('offArgs', t('s.k.offArgs'), ''));
   }
   // holding the key on the phone runs another key (a key that was never saved has no id to point at yet)
@@ -2847,6 +3070,25 @@ async function testKey() {
 }
 
 // ---------------------------------------------------------------- general
+// Plex connection key. It is read from the current config (cfg, not a captured copy), so Apply JSON counts as a change.
+const plexKeyOf = (k) => [k?.plexUrl, k?.plexToken, k?.plexPlayerUrl].map((v) => v || '').join('\n');
+const plexKey = () => plexKeyOf(cfg.controls);
+// the agent checks the saved settings, so a check is only asked for when the fields hold what is saved
+const plexSaved = () => { try { return plexKeyOf(JSON.parse(saved || '{}').controls) === plexKey(); } catch (_) { return false; } };
+// One local GET to a Plex route: a 30 s limit (the agent can make three requests of 8 s for one check), only the newest
+// request of its control may write, and an answer is dropped when the connection settings changed while it was out.
+const plexGet = async (path, seq, status, busy, done) => {
+  const mine = ++seq.n, key = plexKey(); status.textContent = busy;
+  const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 30000);
+  try {
+    const r = await fetch('/api/controls/' + path, { signal: abort.signal }); const j = await r.json().catch(() => null);
+    if (mine !== seq.n) return;
+    if (key !== plexKey()) { status.textContent = ''; return; }
+    if (!r.ok || j === null) throw new Error('failed');
+    done(j, key);
+  } catch (_) { if (mine === seq.n) status.textContent = key === plexKey() ? t('s.cd.requestFailed') : ''; }
+  finally { clearTimeout(timer); }
+};
 function renderControlSettings() {
   const root = $('controlSettings');
   const c = cfg.controls ??= { actions: [], profiles: [] }; c.actions ??= []; c.profiles ??= [];
@@ -2875,6 +3117,18 @@ function renderControlSettings() {
     }),btn(t('s.cd.checkConn'),async()=>{const j=await request('spotify/state','GET');auth.textContent=j.connected?t('s.cd.connected'):j.error || t('s.cd.notConnected');}),
     btn(t('s.cd.disconnect'),async()=>{await request('spotify/disconnect');auth.textContent=t('s.cd.disconnected');}));
   root.append(spotify);
+  // Plex: the server address and token stay on this computer; the token goes to the server only, never to the player
+  const plexStatus=h('p',{class:'hint'});
+  const plexCheckSeq={n:0};
+  const plex=h('details',{},h('summary',{},t('s.cd.plexConn')),h('p',{class:'hint'},t('s.cd.plexHint')),
+    ...[['plexUrl','s.cd.plexUrl'],['plexToken','s.cd.plexToken','password'],['plexPlayerUrl','s.cd.plexPlayer']].map(([key,label,type])=>{
+      // autocomplete off, like the Immich and Discord fields: a browser's password autofill otherwise treats the address
+      // before the token field as a user name and blanks or replaces it
+      const f=field(t(label),c,key,type); const input=f.querySelector('input'); input.autocomplete='off'; input.spellcheck=false;
+      // a result belongs to the values it was checked with: an edit clears it and drops an answer still on its way
+      input.addEventListener('input',()=>{plexCheckSeq.n++;plexStatus.textContent='';}); return f; }),
+    btn(t('s.cd.plexCheck'),()=>{if(!plexSaved()){plexCheckSeq.n++;plexStatus.textContent=t('s.js.saveFirst');return;}plexGet('plex/check',plexCheckSeq,plexStatus,t('s.cd.plexChecking'),j=>{plexStatus.textContent=j.connected?(j.error||t('s.cd.connected')):j.error||t('s.cd.notConnected');});}),plexStatus);
+  root.append(plex);
   const integration=h('details',{},h('summary',{},t('s.cd.audioInt')),field(t('s.cd.mixerExe'),c,'mixerExecutable'),field(t('s.cd.mixerDll'),c,'mixerLibrary'));root.append(integration);
   const hintsRaw={shortcut:'Target: existing shortcut ID.',app:'Target: application shortcut ID.',macro:'Target: macro shortcut ID.',snippet:'Target: text shortcut ID.',meeting:'Target: meeting shortcut ID.',discord:'Target: Discord shortcut ID.',focus:'Target: work/focus macro shortcut ID.',project:'Target: folder/project shortcut ID.',keys:'Target: chord, e.g. Ctrl+Shift+M.',text:'Target: text to type.',task:'Target: executable shortcut ID. Output remains on the computer.',server:'Target: executable shortcut ID. Stop affects only the process started by this control.',sound:'Target: full sound file path. Device: output ID. Value: volume 0–100.',radio:'Target: direct HTTP(S) stream or Windows-only HLS (.m3u8) URL. Device: output ID. Value: volume 0–100.',playlist:'Target: spotify:playlist:… (also album, track or episode).',midi:'Target: hex MIDI bytes, e.g. B0 07 {value}. Device: numeric output port. Value: 0–127.',osc:'Target: OSC address, e.g. /volume. Device: host:port. Value: whole number (sent as an OSC float).',service:'Target: Windows service name. Argument: start, stop, restart.',workflow:'Target: owner/repo. Argument: workflow filename. Device: optional branch/ref.','window-layout':'Target: process name. Argument: left, right, center, max.','display-profile':'Target: monitor ID. Argument: JSON with width, height, hz, optional x/y.','audio-route':'Target: process.exe. Device: output ID. Requires SoundVolumeView.',mixer:'Target: Strip[0].Gain or Bus[0].Gain. Value: −60 to 12 dB.','mixer-mute':'Target: Strip[0].Mute (or supported toggle). Value: 0 or 1.',presentation:'Target: POWERPNT or soffice. Argument: start, next, prev, end, blank.'};
   const hints = Object.fromEntries(Object.entries(hintsRaw).map(([k, v]) => [k, tl(v)]));
@@ -3131,15 +3385,16 @@ function appearanceEditor(owner, parents, label, widget = false) {
       return PhoneBoxAppearance.resolve(...parents(), inherited).font;
     })();
     fields.push(h('div', { class: 'field' }, h('label', {}, t('s.ap.font')),
-      h('select', { 'aria-label': 'Font', onchange: e => { set('font', e.target.value || null); render(); } },
+      h('select', { 'aria-label': t('s.ap.font'), onchange: e => { set('font', e.target.value || null); render(); } },
         h('option', { value: '', selected: owner.appearance?.font == null }, !inheritedFont || inheritedFont === 'default' ? t('s.appearance.originalWidgetFont') : t('s.ap.inheritFont', { font: tl(fontLabels[inheritedFont]) })),
         ...Object.entries(fontLabels).map(([value, text]) => h('option', { value, selected: owner.appearance?.font === value }, tl(text))))));
     const numeric = (key, title, max, fallback, min = 0, step = 1, unit = ' px') => {
       const value = current[key];
-      const output = h('output', { style: { minWidth: '80px', fontVariantNumeric: 'tabular-nums' } }, value == null ? 'Automatic' : value + unit);
+      const output = h('output', { style: { minWidth: '80px', fontVariantNumeric: 'tabular-nums' } }, value == null ? tl('Automatic') : value + unit);
       const input = h('input', { type: 'range', min, max, step, value: value ?? fallback, 'aria-label': title, style: { flex: '1', minWidth: '60px' } });
       input.oninput = () => { set(key, Number(input.value)); output.textContent = input.value + unit; };
-      const reset = h('button', { type: 'button', class: 'btn sm', 'aria-label': 'Inherit ' + title.toLowerCase(), onclick: () => { set(key, null); render(); } }, t('s.ap.inherit'));
+      const inherit = t('s.ap.inherit');
+      const reset = h('button', { type: 'button', class: 'btn sm', 'aria-label': inherit + ' · ' + title, onclick: () => { set(key, null); render(); } }, inherit);
       fields.push(h('div', { class: 'field' }, h('label', {}, title), h('div', { class: 'row', style: { gap: '10px' } }, input, output, reset)));
     };
     numeric('fontScale', t('s.ap.fontSize'), 200, 100, 50, 5, '%');
@@ -3147,14 +3402,16 @@ function appearanceEditor(owner, parents, label, widget = false) {
     if (!widget) numeric('gap', t('s.ap.gap'), 24, 8);
     numeric('padding', t('s.ap.padding'), 24, 12);
     if (!widget) numeric('pagePadding', t('s.ap.pagePadding'), 32, 14);
+    const on = window.PhoneBoxI18n?.tp('On') ?? 'On';
+    const off = window.PhoneBoxI18n?.tp('Off') ?? 'Off';
     for (const [key, title] of [['border', t('s.ap.border')], ['shadow', t('s.ap.shadow')]]) {
       const value = owner.appearance?.[key];
       const inherited = { ...(owner.appearance || {}) }; delete inherited[key];
       const fallback = PhoneBoxAppearance.resolve(...parents(), inherited)[key];
       fields.push(h('div', { class: 'field' }, h('label', {}, title),
         h('select', { 'aria-label': title, onchange: e => set(key, e.target.value === '' ? null : e.target.value === 'true') },
-          h('option', { value: '', selected: value == null }, fallback == null ? t('s.appearance.originalWidgetDefault') : 'Inherit (' + (fallback ? 'on' : 'off') + ')'),
-          h('option', { value: 'true', selected: value === true }, 'On'), h('option', { value: 'false', selected: value === false }, 'Off'))));
+          h('option', { value: '', selected: value == null }, fallback == null ? t('s.appearance.originalWidgetDefault') : t('s.ap.inherit') + ' (' + (fallback ? on : off) + ')'),
+          h('option', { value: 'true', selected: value === true }, on), h('option', { value: 'false', selected: value === false }, off))));
     }
     root.replaceChildren(h('summary', {}, label), h('p', { class: 'hint' }, widget
       ? 'Overrides the page and global appearance. Inherit restores the preset or parent value.'
@@ -3224,6 +3481,10 @@ function applyLanguageUi(langPref) {
   if ($('langSel')) $('langSel').value = I18n.getPref();
   if ($('displayLangSel')) $('displayLangSel').value = I18n.getPref();
   I18n.applyDom();
+  updateStageText();
+  $('chargeRangeAnd').textContent = tc('and');
+  if ($('advancedVersionLabel')) $('advancedVersionLabel').textContent = tc('Version');
+  document.querySelector('[data-bind="adbPath"]').placeholder = tc('auto-detected');
   fitLeads(); // translated intros can be shorter or longer than the old text
 }
 
@@ -3626,7 +3887,7 @@ async function loadInfo() {
     }
     $('codexHookTrust').style.display = codexHook.installed ? '' : 'none';
     $('info').replaceChildren(
-      h('dt', {}, 'Version'), h('dd', {}, i.version),
+      h('dt', { id: 'advancedVersionLabel' }, tc('Version')), h('dd', {}, i.version),
       h('dt', {}, t('s.adv.settingsFile')), h('dd', {}, h('code', {}, i.configPath)),
       h('dt', {}, t('s.adv.log')), h('dd', {}, h('code', {}, i.logPath)),
       h('dt', {}, 'adb'), h('dd', {}, i.adb || '—'));
@@ -3637,10 +3898,10 @@ async function loadInfo() {
 // The form reads every section it binds and renders, so a config without one — an older export, or a
 // hand-trimmed paste in Apply JSON — gets the same defaults a fresh load does before anything renders.
 function fillDefaults() {
-  cfg.pages = fitPages(cfg.pages); cfg.shortcuts ??= []; cfg.rules ??= []; cfg.display ??= {}; cfg.night = { enabled: true, start: '00:30', end: '07:30', brightness: 0.02, ...cfg.night }; cfg.weather ??= {}; cfg.weather.unit ??= 'celsius'; cfg.weather.model ??= ''; cfg.photos ??= { source: 'folder', folder: '', subfolders: true, immichUrl: '', immichKey: '', immichAlbum: '', immichAlbumName: '' }; cfg.lan ??= { enabled: false, port: 8766 }; cfg.updates ??= { auto: true, repo: 'ersinkoc/phonebox' }; cfg.claude ??= { phoneApprovals: true, timeoutSec: 90, onlyWhenAway: false, shareSessionTitles: false, shareConversation: false };
+  cfg.pages = fitPages(cfg.pages); cfg.shortcuts ??= []; cfg.rules ??= []; cfg.display ??= {}; cfg.night = { enabled: true, start: '00:30', end: '07:30', brightness: 0.02, ...cfg.night }; cfg.weather ??= {}; cfg.weather.unit ??= 'celsius'; cfg.weather.model ??= ''; cfg.photos ??= { source: 'folder', folder: '', subfolders: true, immichUrl: '', immichKey: '', immichAlbum: '', immichAlbumName: '' }; cfg.lan ??= { enabled: false, port: 8766 }; cfg.updates ??= { auto: true, repo: 'ersinkoc/phonebox' }; cfg.claude ??= { phoneApprovals: true, timeoutSec: 90, onlyWhenAway: false, shareSessionTitles: false, shareConversation: false }; cfg.opencode ??= { phoneApprovals: false, timeoutSec: 90, onlyWhenAway: false, alwaysCountdownSec: 10, watchWsl: false, shareSessionTitles: false, sessions: false };
   cfg.codexBar ??= { providers: ['claude', 'codex', 'antigravity'], rotate: true, pageSize: 2, rotateInterval: 8 };
   for (const [k, v] of Object.entries({ language: 'auto', hour12: false, idleReturnSec: 90, switchCountdownSec: 3, touchGraceSec: 20, minDwellSec: 15, holdMaxMin: 30, keepAwake: true, openOnConnect: true,
-    showSeconds: true, vibrate: true, finishToast: true, volumeKeys: true, artTint: true, proximityWake: true, orientation: 'landscape', theme: 'default', accent: '#2dd4bf' })) cfg.display[k] ??= v;
+    showSeconds: true, vibrate: true, finishToast: true, volumeKeys: true, artTint: true, nightWhenUnreachable: false, unreachableNightDelayMin: 5, proximityWake: true, orientation: 'landscape', theme: 'default', accent: '#2dd4bf' })) cfg.display[k] ??= v;
   cfg.charge ??= { enabled: false, min: 50, max: 80, method: 'ha' };
   cfg.steam ??= { enabled: false };
 }
@@ -3780,9 +4041,9 @@ for (const name of ['codex', 'claude']) $(`${name}HookBtn`).onclick = async () =
 $('modalClose').onclick = closeModal;
 $('lanPair').onclick = pairOverWifi;
 $('modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
-const whTry = (fn, ok) => async () => { try { await fn(); toast(ok); loadPushed(); } catch (e) { toast(e.message, true); } };
-$('whNotify').onclick = whTry(() => postJson('/api/notify', { title: 'PhoneBox', text: 'Hello from the settings page', level: 'ok' }), 'Sent — look at the phone');
-$('whPush').onclick = whTry(() => postJson('/api/push/demo', { value: Math.round(Math.random() * 100), unit: '%', sub: 'sent ' + new Date().toLocaleTimeString() }), 'Pushed "demo"');
+const whTry = (fn, ok) => async () => { try { await fn(); toast(tc(ok)); loadPushed(); } catch (e) { toast(e.message, true); } };
+$('whNotify').onclick = whTry(() => postJson('/api/notify', { title: 'PhoneBox', text: tc('Hello from the settings page'), level: 'ok' }), 'Sent — look at the phone');
+$('whPush').onclick = whTry(() => postJson('/api/push/demo', { value: Math.round(Math.random() * 100), unit: '%', sub: tc('sent ') + new Date().toLocaleTimeString() }), 'Pushed "demo"');
 $('whRefresh').onclick = whTry(() => postJson('/api/refresh'), 'The panel refreshes');
 $('whReload').onclick = whTry(() => postJson('/api/refresh?reload=1'), 'The panel reloads');
 $('whClear').onclick = async () => { if (!confirm(t('s.js.deletePushed'))) return; await fetch('/api/push', { method: 'DELETE' }); loadPushed(); };
@@ -3791,13 +4052,13 @@ $('citySearch').onkeydown = (e) => { if (e.key === 'Enter') searchCity(); };
 $('applyJson').onclick = () => {
   try {
     const c = JSON.parse($('json').value);
-    if (typeof c !== 'object' || c === null || Array.isArray(c)) throw new Error('settings JSON must be an object');
+    if (typeof c !== 'object' || c === null || Array.isArray(c)) throw new Error(tc('Settings JSON must be an object.'));
     cfg = c;
     fillDefaults();
     $('jsonErr').textContent = '';
     renderPages(); renderDeck(); renderRules(); renderCalendars(); renderFeeds(); renderCameras(); renderConsole(); renderNetAdapters(); renderPhones(); renderCharge(); bindForm(); changed(); toast(t('s.jsonLoaded'));
   }
-  catch (e) { $('jsonErr').textContent = e.message; }
+  catch (e) { $('jsonErr').textContent = e instanceof SyntaxError ? tc('Invalid settings JSON.') : e.message; }
 };
 $('save').title = (/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+') + 'S';
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('modal').hidden) closeModal(); });

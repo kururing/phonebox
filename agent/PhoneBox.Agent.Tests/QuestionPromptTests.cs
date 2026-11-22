@@ -81,7 +81,7 @@ public sealed class QuestionPromptTests
             Assert.Contains("oldVal", approval.Detail);
             Assert.Contains("newVal", approval.Detail);
             Assert.False(approval.Detail.StartsWith("\n\n"));
-            approvals.Decide(approval.Id, "skip");
+            approvals.Decide(approval.Id, "deny");
             await editTask;
 
             var qText = ClaudeHook.QuestionDetail(Json("""

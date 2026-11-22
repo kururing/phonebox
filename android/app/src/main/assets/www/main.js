@@ -16,6 +16,8 @@ import './widgets/console.js';
 import './widgets/dictate.js';
 import './widgets/camera.js';
 import './widgets/spectrum.js';
+import './widgets/steam-library.js';
+import './widgets/lyrics.js';
 
 // PhoneBox desk panel. Pages are 12 × 6 grids of widgets, designed in the agent's settings page.
 // The panel talks to the PhoneBox agent through "/agent/*", which the Android shell proxies over USB
@@ -28,6 +30,24 @@ export const API = '/agent/api';
 export const PANEL_HEADERS = { 'X-PhoneBox-Panel': '1' };
 export const I18n = window.PhoneBoxI18n;
 export const t = (key, vars) => (I18n ? I18n.t(key, vars) : key);
+/** A panel literal translated by its English text (i18n.js PANEL); English when the language has no entry. */
+export const tp = (text) => (I18n && I18n.tp ? I18n.tp(text) : text);
+/** tp() with {name} placeholders filled in after the lookup, so the English text with its placeholders is the key. */
+export const tpv = (text, vars) => Object.entries(vars).reduce((s, [k, v]) => s.split(`{${k}}`).join(String(v)), tp(text));
+/** A quota label or note the agent sends in English ("5-hour session", "Weekly · Opus", "Credits: 1,250"), in the panel
+ *  language where it has the words; a model or group name in it stays as it is. */
+export function quotaText(s) {
+  if (!s || typeof s !== 'string') return s;
+  const exact = tp(s);
+  if (exact !== s) return exact;
+  let m;
+  if ((m = /^(.*?) · (.*)$/.exec(s))) return `${quotaText(m[1])} · ${m[2]}`;
+  if ((m = /^(.*?) \((.*)\)$/.exec(s))) return `${quotaText(m[1])} (${m[2]})`;
+  if ((m = /^(\d+(?:\.\d+)?)-hour$/.exec(s))) return tpv('{n}-hour', { n: m[1] });
+  if ((m = /^(\d+)-day$/.exec(s))) return tpv('{n}-day', { n: m[1] });
+  if ((m = /^Credits: (.*)$/.exec(s))) return tpv('Credits: {n}', { n: m[1] === 'unlimited' ? tp('unlimited') : m[1] });
+  return s;
+}
 export let LOCALE = I18n ? I18n.getLocale() : 'en-GB';
 export const COLS = 12;
 export const ROWS = 6;
@@ -35,7 +55,7 @@ export const $ = (id) => document.getElementById(id);
 // The native bridge (window.Android) is in every frame, sandboxed widgets included, so each call carries a key that only
 // the panel's own frames receive (MainActivity.bridgeKey). This wrapper adds it.
 const BRIDGE = ['battery', 'buzz', 'haptic', 'is24Hour', 'pcs', 'selectPc', 'forgetPc', 'setBrightness', 'setHomeScreen', 'setOrientation',
-  'setPinned', 'setVolumeKeys', 'transport', 'sensors', 'version', 'screenSize', 'canListen', 'listen', 'stopListening', 'cancelListening', 'trackpad', 'canWake', 'wakePc',
+  'setPinned', 'setVolumeKeys', 'setLanguage', 'transport', 'sensors', 'version', 'screenSize', 'canListen', 'listen', 'stopListening', 'cancelListening', 'trackpad', 'canWake', 'wakePc',
   'startScreenMirror', 'updateScreenMirrorRect', 'stopScreenMirror', 'screenMirrorCapabilities', 'setMirrorLocked'];
 export const bridge = typeof Android === 'undefined' ? null : Object.fromEntries(BRIDGE.filter((m) => typeof Android[m] === 'function')
   .map((m) => [m, (...args) => Android[m](window.__phoneboxKey || '', ...args)]));
@@ -57,7 +77,8 @@ export const FALLBACK_PAGES = [{
 export const DEFAULT_CFG = {
   weather: { city: 'Tallinn', lat: 59.437, lon: 24.745, unit: 'celsius', model: '' },
   night: { enabled: true, start: '00:30', end: '07:30', brightness: 0.02 },
-  display: { showSeconds: true, idleReturnSec: 90, vibrate: true, finishToast: true, volumeKeys: true },
+  display: { showSeconds: true, idleReturnSec: 90, vibrate: true, finishToast: true, volumeKeys: true, nightWhenUnreachable: false, unreachableNightDelayMin: 5 },
+  opencode: { alwaysCountdownSec: 10 },
   pages: FALLBACK_PAGES,
   shortcuts: [],
 };
@@ -203,6 +224,9 @@ export function h(tag, cls, ...kids) {
  *  (in Turkish "Notifications" becomes "NOTİFİCATİONS"). Titles the user typed are left as they are. */
 export function en(text) {
   const e = document.createElement('span');
+  // a title the panel language has a translation for is that language's text, not English
+  const local = tp(text);
+  if (local !== text) { e.textContent = local; return e; }
   e.lang = 'en';
   e.textContent = text;
   return e;
@@ -521,7 +545,7 @@ export function gpuMem(g) {
 }
 const memText = (m) => `${r1(m.used)} / ${Math.round(m.total)} GB`;
 /** Board power: watts when a sensor gives them, otherwise the share of the power limit Windows reports. */
-export const gpuPower = (g) => (g?.power != null ? `${Math.round(g.power)} W` : g?.powerPct != null ? `${Math.round(g.powerPct)}% power` : null);
+export const gpuPower = (g) => (g?.power != null ? `${Math.round(g.power)} W` : g?.powerPct != null ? tpv('{n}% power', { n: Math.round(g.powerPct) }) : null);
 export const netMax = () => Math.max(1, ...hist.down, ...hist.up) * 1.15;
 
 export const METRICS = {
@@ -530,52 +554,52 @@ export const METRICS = {
   gpu: { label: 'GPU', name: 'Graphics', color: '--gpu', unit: '%', max: () => 100, val: (s) => gpuOf(s)?.util,
     sub: (s) => {
       const g = gpuOf(s);
-      if (!g) return 'No GPU data';
+      if (!g) return tp('No GPU data');
       const parts = [g.temp != null ? `${Math.round(g.temp)}°C` : null, gpuPower(g)].filter(Boolean);
       if (parts.length) return parts.join(' · ');
       const mem = gpuMem(g);
-      if (mem) return `${memText(mem)} memory`; // no sensors (Apple GPU)
-      return shortGpu(g.name) || 'Active';
+      if (mem) return tpv('{mem} memory', { mem: memText(mem) }); // no sensors (Apple GPU)
+      return shortGpu(g.name) || tp('Active');
     }, title: (s) => gpuOf(s)?.name },
   ram: { label: 'RAM', name: 'Memory', color: '--ram', unit: 'GB', max: (s) => s.pc?.ramTotalGb || 1, val: (s) => s.pc?.ramUsedGb, fmt: r1,
     pct: (s) => (s.pc ? (s.pc.ramUsedGb / s.pc.ramTotalGb) * 100 : null), sub: (s) => (s.pc && s.pc.ramTotalGb ? `${r1(s.pc.ramUsedGb)} / ${Math.round(s.pc.ramTotalGb)} GB` : '') },
   vram: { label: 'VRAM', name: 'Video memory', color: '--gpu', unit: '%', max: () => 100,
     val: (s) => { const m = gpuMem(gpuOf(s)); return m ? (m.used / m.total) * 100 : null; },
-    sub: (s) => { const m = gpuMem(gpuOf(s)); return m ? memText(m) : 'No GPU data'; } },
+    sub: (s) => { const m = gpuMem(gpuOf(s)); return m ? memText(m) : tp('No GPU data'); } },
   net: { label: 'NETWORK', name: 'Network', color: '--net', rate: true, hist: 'down', max: netMax, val: (s) => s.pc?.netDownBps,
     sub: (s) => '↑ ' + rateStr(s.pc?.netUpBps) + (s.ping?.ms != null ? ` · ${Math.round(s.ping.ms)} ms` : '') },
   down: { label: 'DOWNLOAD', name: 'Download', color: '--net', rate: true, max: netMax, val: (s) => s.pc?.netDownBps },
   up: { label: 'UPLOAD', name: 'Upload', color: '--up', rate: true, max: netMax, val: (s) => s.pc?.netUpBps },
   ping: { label: 'PING', name: 'Ping', color: '#38bdf8', unit: 'ms', max: () => Math.max(50, ...hist.ping) * 1.2, val: (s) => s.ping?.ms,
-    sub: (s) => (s.ping ? `avg ${s.ping.avgMs ?? '—'} ms · loss ${s.ping.lossPct}%` : '') },
+    sub: (s) => (s.ping ? tpv('avg {avg} ms · loss {loss}%', { avg: s.ping.avgMs ?? '—', loss: s.ping.lossPct }) : '') },
   gputemp: { label: 'GPU TEMP', name: 'GPU temperature', color: '#f97316', unit: '°C', max: () => 100, hot: [75, 85], val: (s) => gpuOf(s)?.temp,
     sub: (s) => {
       const g = gpuOf(s);
-      if (!g) return 'No GPU data';
-      const detail = [g.hotSpot != null ? `Hot spot ${Math.round(g.hotSpot)}°` : null,
-        g.fan != null ? `Fan ${Math.round(g.fan)}%` : g.fanRpm != null ? `Fan ${Math.round(g.fanRpm)} rpm` : null,
+      if (!g) return tp('No GPU data');
+      const detail = [g.hotSpot != null ? tpv('Hot spot {n}°', { n: Math.round(g.hotSpot) }) : null,
+        g.fan != null ? tpv('Fan {n}%', { n: Math.round(g.fan) }) : g.fanRpm != null ? tpv('Fan {n} rpm', { n: Math.round(g.fanRpm) }) : null,
         g.clock != null ? `${Math.round(g.clock)} MHz` : null].filter(Boolean);
-      return detail.length ? detail.join(' · ') : (g.temp != null ? 'Temperature' : 'No GPU data');
+      return detail.length ? detail.join(' · ') : (g.temp != null ? tp('Temperature') : tp('No GPU data'));
     } },
   hotspot: { label: 'HOT SPOT', name: 'GPU hot spot', color: '#ef4444', unit: '°C', max: () => 110, hot: [90, 100], val: (s) => gpuOf(s)?.hotSpot,
     sub: (s) => {
       const g = gpuOf(s);
-      if (g?.hotSpot == null) return 'needs LibreHardwareMonitor';
-      return [g.temp != null ? `Edge ${Math.round(g.temp)}°` : null, g.memTemp != null ? `Memory ${Math.round(g.memTemp)}°` : null].filter(Boolean).join(' · ');
+      if (g?.hotSpot == null) return tp('needs LibreHardwareMonitor');
+      return [g.temp != null ? tpv('Edge {n}°', { n: Math.round(g.temp) }) : null, g.memTemp != null ? tpv('Memory {n}°', { n: Math.round(g.memTemp) }) : null].filter(Boolean).join(' · ');
     } },
   gpupower: { label: 'GPU POWER', name: 'GPU power', color: '#facc15', unit: (s) => (gpuOf(s)?.power != null ? 'W' : '%'),
     max: (s) => { const g = gpuOf(s); return g?.power != null ? Math.max(g.powerLimit || 0, ...hist.gpupower, 50) : 100; },
     val: (s) => { const g = gpuOf(s); return g?.power ?? g?.powerPct; },
     sub: (s) => {
       const g = gpuOf(s);
-      if (!g || (g.power == null && g.powerPct == null)) return 'No power data';
-      if (g.power != null && g.powerLimit) return `of ${Math.round(g.powerLimit)} W limit`;
-      return g.power != null ? shortGpu(g.name) : 'of the power limit';
+      if (!g || (g.power == null && g.powerPct == null)) return tp('No power data');
+      if (g.power != null && g.powerLimit) return tpv('of {n} W limit', { n: Math.round(g.powerLimit) });
+      return g.power != null ? shortGpu(g.name) : tp('of the power limit');
     } },
   gpuclock: { label: 'GPU CLOCK', name: 'GPU clock', color: '#a78bfa', unit: 'MHz', max: () => Math.max(1000, ...hist.gpuclock) * 1.1, val: (s) => gpuOf(s)?.clock,
-    sub: (s) => { const g = gpuOf(s); return g?.memClock != null ? `Memory ${Math.round(g.memClock)} MHz` : g?.clock == null ? 'No clock data' : ''; } },
+    sub: (s) => { const g = gpuOf(s); return g?.memClock != null ? tpv('Memory {n} MHz', { n: Math.round(g.memClock) }) : g?.clock == null ? tp('No clock data') : ''; } },
   cputemp: { label: 'CPU TEMP', name: 'CPU temperature', color: '#fb7185', unit: '°C', max: () => 100, hot: [75, 85], val: (s) => s.pc?.cpuTemp,
-    sub: (s) => (s.pc?.cpuTemp == null ? 'needs LibreHardwareMonitor' : shortCpu(s.pc?.cpuName)) },
+    sub: (s) => (s.pc?.cpuTemp == null ? tp('needs LibreHardwareMonitor') : shortCpu(s.pc?.cpuName)) },
 };
 
 export function metricText(m, s) {
@@ -1132,7 +1156,7 @@ export function pushView(item) {
 
 export function fmtValue(x) {
   if (typeof x === 'number') return Math.abs(x) >= 100 ? String(Math.round(x)) : String(Math.round(x * 10) / 10);
-  if (typeof x === 'boolean') return x ? 'On' : 'Off';
+  if (typeof x === 'boolean') return x ? tp('On') : tp('Off');
   return x == null ? '—' : String(x);
 }
 export const LEVEL_COLOR = { ok: '#22c55e', success: '#22c55e', warn: '#f59e0b', warning: '#f59e0b', error: '#ef4444', fail: '#ef4444', failure: '#ef4444', info: '#60a5fa' };
@@ -1198,7 +1222,7 @@ export async function loadApprovals() {
 export function renderApproval() {
   const a = approvals[0];
   const box = $('approval');
-  if (!a) { box.hidden = true; approvalShown = null; return; }
+  if (!a) { box.hidden = true; approvalShown = null; stopAlwaysCountdown(); return; }
   if (approvalShown !== a.id) {
     approvalShown = a.id;
     lastTouch = Date.now();
@@ -1206,15 +1230,35 @@ export function renderApproval() {
     if (nightOn) { wakeUntil = Date.now() + 60_000; setNight(false); }
     buzz('0,120,80,120,80,240');
     // A prompt whose answer is still in flight comes back locked: it can be shown again while its own post runs.
-    $('apAllow').disabled = $('apDeny').disabled = $('apSkip').disabled = submitting.has(a.id);
+    // The Send button and the typed draft belong to the previous question: this one starts clean.
+    $('apAllow').disabled = $('apDeny').disabled = $('apAlways').disabled = $('apSkip').disabled = $('apCustomSend').disabled = submitting.has(a.id);
+    $('apCustomText').value = '';
+    renderChoices(a);
+    // Allow always saves a pattern for the whole project: give the thumb ten seconds (as configured) before it can
+    // be pressed by accident.
+    const countdown = Math.max(0, Math.min(60, cfg.opencode?.alwaysCountdownSec ?? 10));
+    if (countdown > 0 && a.kind !== 'question' && a.always) startAlwaysCountdown(countdown); else stopAlwaysCountdown();
   }
   // A question from Claude is answered at the PC (the terminal shows it); the phone only tells you it is waiting.
+  // OpenCode questions carry their answers, so the phone can send the pick — or a typed answer when allowed.
   const asking = a.kind === 'question';
+  const options = asking && Array.isArray(a.options) ? a.options : [];
   $('apAllow').hidden = $('apDeny').hidden = asking;
-  $('apSkip').hidden = !asking;
+  // "Got it" is for questions answered at the PC (Claude's, or OpenCode forms with nothing to tap); a card that
+  // carries its own answers answers them right here, so the extra button would only crowd the row.
+  $('apSkip').hidden = !asking || options.length > 0 || !!a.custom;
+  // "Always allow" comes with OpenCode prompts (OpenCode saves the pattern for the project); the other agents have no
+  // such answer and keep their two buttons. Three buttons are tighter: the countdown steps aside while the third shows.
+  $('apAlways').hidden = asking || !a.always;
+  box.classList.toggle('with-always', !asking && !!a.always);
+  box.classList.toggle('with-choices', options.length > 0 || (asking && !!a.custom));
+  $('apChoices').hidden = options.length === 0;
+  $('apCustom').hidden = !(asking && a.custom);
+  if (asking && a.custom) $('apCustomText').placeholder = t('panel.answerCustom');
   const source = a.source || 'AI agent';
-  const sourceKind = /codex/i.test(source) ? 'codex' : /claude/i.test(source) ? 'claude' : 'agent';
-  $('apLogo').textContent = sourceKind === 'codex' ? '◎' : sourceKind === 'claude' ? '✳' : '◆';
+  const sourceKind = /opencode/i.test(source) ? 'opencode' : /codex/i.test(source) ? 'codex' : /claude/i.test(source) ? 'claude' : 'agent';
+  // the card wears the agent's own glyph: OpenCode's diamond (as on the sessions widget), Codex's circle, Claude's asterisk
+  $('apLogo').textContent = sourceKind === 'opencode' ? '◈' : sourceKind === 'codex' ? '◎' : sourceKind === 'claude' ? '✳' : '◆';
   $('apLogo').className = `ap-logo ${sourceKind}`;
   $('apSource').textContent = source;
   $('apProject').textContent = a.project || a.session || '';
@@ -1227,8 +1271,58 @@ export function renderApproval() {
   $('apDesc').textContent = a.description || '';
   $('apDetail').textContent = a.detail || '';
   $('apDetail').hidden = !a.detail;
+  // what Allow always would save for the project, so the card says what it agrees to from then on
+  const pattern = !asking && a.always && a.alwaysPattern ? t('panel.alwaysSaves', { pattern: a.alwaysPattern }) : '';
+  $('apPattern').textContent = pattern;
+  $('apPattern').hidden = !pattern;
   box.hidden = false;
   tickApproval();
+}
+
+// Agent questions (OpenCode forms): one button per answer. Built only when the card changes, so the five-second list
+// poll never rebuilds the buttons mid-tap or disturbs the typed answer.
+function renderChoices(a) {
+  const wrap = $('apChoices');
+  const options = a.kind === 'question' && Array.isArray(a.options) ? a.options : [];
+  wrap.replaceChildren(...options.map((o) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ap-opt';
+    b.disabled = submitting.has(a.id);
+    const label = document.createElement('b');
+    label.textContent = o.label || o.value || '';
+    b.appendChild(label);
+    if (o.description) { const d = document.createElement('small'); d.textContent = o.description; b.appendChild(d); }
+    b.addEventListener('click', () => decide('answer', o.value, o.label || o.value));
+    return b;
+  }));
+}
+
+// Allow always arms after the configured seconds (Settings › General › OpenCode prompts); the seconds show on the
+// button itself. A stale countdown never unlocks a newer card (or one whose answer is on its way): every step
+// re-checks which card is current.
+let alwaysCountdown = null;
+
+function startAlwaysCountdown(seconds) {
+  stopAlwaysCountdown();
+  const b = $('apAlways');
+  const id = approvalShown;
+  let left = seconds;
+  b.disabled = true;
+  b.textContent = `${t('panel.allowAlways')} · ${left}`;
+  alwaysCountdown = setInterval(() => {
+    left -= 1;
+    if (left > 0 && approvalShown === id) { b.textContent = `${t('panel.allowAlways')} · ${left}`; return; }
+    stopAlwaysCountdown();
+    if (approvalShown === id && approvals[0] && approvals[0].id === id && !submitting.has(id)) {
+      b.disabled = false;
+      b.textContent = t('panel.allowAlways');
+    }
+  }, 1000);
+}
+
+function stopAlwaysCountdown() {
+  if (alwaysCountdown !== null) { clearInterval(alwaysCountdown); alwaysCountdown = null; }
 }
 
 export function tickApproval() {
@@ -1247,18 +1341,22 @@ setInterval(tickApproval, 1000);
 // screen: the answer is needed when someone is looking, and a phone in a pocket should not poll all night.
 setInterval(() => { if (!PREVIEW && !idle()) loadApprovals(); }, 5000);
 
-export async function decide(decision) {
+export async function decide(decision, value, label) {
   const a = approvals[0];
   if (!a || submitting.has(a.id)) return;
   haptic();
   submitting.add(a.id);
-  $('apAllow').disabled = $('apDeny').disabled = $('apSkip').disabled = true;
+  $('apAllow').disabled = $('apDeny').disabled = $('apAlways').disabled = $('apSkip').disabled = $('apCustomSend').disabled = true;
+  document.querySelectorAll('#apChoices .ap-opt').forEach((b) => { b.disabled = true; });
   let accepted = false;
   try {
-    await api(`/approvals/${encodeURIComponent(a.id)}?decision=${decision}`, 'POST', 4000);
+    // an answer carries its value as a second parameter; allow / always / deny / skip are plain flags
+    const q = value === undefined ? `decision=${decision}` : `decision=answer&value=${encodeURIComponent(value)}`;
+    await api(`/approvals/${encodeURIComponent(a.id)}?${q}`, 'POST', 4000);
     accepted = true;
     if (decision === 'skip') toast(t('panel.questionWaiting'), 'warn');
-    else toast(t(decision === 'allow' ? 'panel.allowedTool' : 'panel.deniedTool', { tool: a.tool }), decision === 'allow' ? 'ok' : 'err');
+    else if (decision === 'answer') toast(t('panel.answered', { answer: label || value || '' }), 'ok');
+    else toast(t(decision === 'allow' ? 'panel.allowedTool' : decision === 'always' ? 'panel.allowedAlways' : 'panel.deniedTool', { tool: a.tool }), decision === 'deny' ? 'err' : 'ok');
   } catch (_) { toast(t('panel.alreadyAnswered'), 'warn'); }
   finally { submitting.delete(a.id); }
   if (!accepted) {
@@ -1266,20 +1364,35 @@ export async function decide(decision) {
     // here would leave nothing on screen while the computer waits; the buttons come back and the next list
     // request settles whether the prompt really is gone. Only for this prompt though: a list request may have
     // moved on to another approval while this one was in flight, and unlocking that one would let a second
-    // answer go out for a prompt whose own post is still running.
+    // answer go out for a prompt whose own post is still running. Allow always stays locked while its own
+    // countdown for this card is still running — a failed post does not arm it early.
     if (approvals[0] && approvals[0].id === a.id) {
-      $('apAllow').disabled = $('apDeny').disabled = $('apSkip').disabled = false;
+      const stillCounting = approvalShown === a.id && alwaysCountdown !== null;
+      $('apAllow').disabled = $('apDeny').disabled = $('apSkip').disabled = $('apCustomSend').disabled = false;
+      $('apAlways').disabled = stillCounting;
+      document.querySelectorAll('#apChoices .ap-opt').forEach((b) => { b.disabled = false; });
     }
     return;
   }
+  // The typed draft is cleared only while this card is still the one on screen: a late success (the post landed
+  // after the user had moved on) must not wipe the next question's draft. A card change clears it in renderApproval.
+  if (decision === 'answer' && approvals[0] && approvals[0].id === a.id) $('apCustomText').value = '';
   answered.add(a.id);
   if (answered.size > answeredCap) answered.delete(answered.values().next().value);
   approvals = approvals.filter((x) => x.id !== a.id);
   renderApproval();
 }
 $('apAllow').addEventListener('click', () => decide('allow'));
+$('apAlways').addEventListener('click', () => decide('always'));
 $('apDeny').addEventListener('click', () => decide('deny'));
 $('apSkip').addEventListener('click', () => decide('skip'));
+
+function sendCustomAnswer() {
+  const v = $('apCustomText').value.trim();
+  if (v) decide('answer', v, v);
+}
+$('apCustomSend').addEventListener('click', sendCustomAnswer);
+$('apCustomText').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendCustomAnswer(); } });
 
 export function handleEvent(e) {
   if (PREVIEW && (e.kind === 'goto' || e.kind === 'back' || e.kind === 'reload')) return; // the editor picks the page
@@ -1291,10 +1404,10 @@ export function handleEvent(e) {
   else if (e.kind === 'reload') location.reload();
 }
 
-export const WIDGET_ICONS = { camera: '📹', dictate: '🎙️', spectrum: '📶', 'app-console': '🎛️', discord: '💬', steam: '👥', 'steam-activity': '🔔', rules: '⚡', chargecare: '🔋', nextup: '⏭️', moon: '🌙', wordclock: '🔤', clock: '🕒', weather: '⛅', forecast: '🌦️', media: '🎵', stat: '📈', gauge: '⏲️', chart: '📊', meters: '💾', gpu: '🎮', quotas: '✳️', sessions: '🤖',
+export const WIDGET_ICONS = { camera: '📹', dictate: '🎙️', spectrum: '📶', 'app-console': '🎛️', discord: '💬', steam: '👥', 'steam-activity': '🔔', rules: '⚡', chargecare: '🔋', nextup: '⏭️', moon: '🌙', wordclock: '🔤', clock: '🕒', weather: '⛅', forecast: '🌦️', media: '🎵', lyrics: '🎤', stat: '📈', gauge: '⏲️', chart: '📊', meters: '💾', gpu: '🎮', quotas: '✳️', sessions: '🤖',
   github: '🐙', processes: '⚙️', shortcuts: '🎛️', button: '🔘', worldclock: '🌍', calendar: '📅', pomodoro: '🍅', countdown: '⏳', note: '📝', command: '💻',
   push: '📡', inbox: '📬', label: '🔤', analog: '🕰️', progress: '📆', stopwatch: '⏱️', timer: '⏲️', counter: '🔢', breathe: '🫁', quote: '💬',
-  checklist: '✅', battery: '🔋', topprocs: '🔥', quotaring: '🎯', volume: '🔊', sun: '🌅', air: '🍃', hackernews: '📰', feeds: '🗞️', photos: '🖼️', exchange: '💱', crypto: '🪙', image: '🖼️', pcswitch: '🖥️' };
+  checklist: '✅', battery: '🔋', topprocs: '🔥', quotaring: '🎯', volume: '🔊', sun: '🌅', air: '🍃', hackernews: '📰', feeds: '🗞️', photos: '🖼️', exchange: '💱', crypto: '🪙', image: '🖼️', pcswitch: '🖥️', 'plex-queue': '🎛️' };
 
 // ================================================================= pages
 export const pager = $('pager');
@@ -2036,6 +2149,18 @@ export function setNight(on) {
   document.body.classList.toggle('night', on);
   applyBrightness(true);
 }
+let unreachableSince = 0;
+
+function reconcileUnreachableNight(now = new Date()) {
+  const enabled = !PREVIEW && cfg.display?.nightWhenUnreachable === true;
+  if (!enabled) unreachableSince = 0;
+  else if (online === false && unreachableSince === 0) unreachableSince = Date.now();
+  const delayMin = Math.max(1, Math.min(30, +cfg.display?.unreachableNightDelayMin || 5));
+  const unreachable = enabled && unreachableSince > 0
+    && Date.now() - unreachableSince >= delayMin * 60_000;
+  const dark = darkRoom && cfg.display?.nightWhenDark === true;
+  setNight((isNight(now) || dark || unreachable) && Date.now() > wakeUntil);
+}
 /**
  * Before widgets are built: a timer that ran out while the panel was closed rings during the build, so the night
  * screen must already be on if the schedule says so (nightOn is null at start, and new settings may move the night).
@@ -2145,8 +2270,7 @@ export function tick() {
   $('nClock').textContent = fmtHM(now);
   $('nDate').textContent = now.toLocaleDateString(LOCALE, { weekday: 'long', day: 'numeric', month: 'long' });
   if (darkSince && Date.now() - darkSince > 30_000) darkRoom = true;
-  const dark = darkRoom && cfg.display?.nightWhenDark === true;
-  setNight((isNight(now) || dark) && Date.now() > wakeUntil);
+  reconcileUnreachableNight(now);
   if (!PREVIEW && !isMirrorLocked() && idleDue() && !navQueue.some((r) => r.kind === 'home')) {
     if (curPage === homeIndex()) { closeSheet(); closeOverview(); lastNav = Date.now(); } // only a sheet to close
     else { navQueue.push({ kind: 'home', at: Date.now(), priority: -1 }); pump(); }
@@ -2174,6 +2298,7 @@ export function applyDisplay() {
   if (langChanged) { buildLayout(); renderApproval(); }
   renderRulesBtn();
   if (PREVIEW || !bridge) return;
+  try { bridge.setLanguage?.(I18n?.getPref() || 'auto'); } catch (_) {}
   try { bridge.setVolumeKeys && bridge.setVolumeKeys(d.volumeKeys !== false); } catch (_) {}
   try { bridge.setPinned && bridge.setPinned(d.pin === true); } catch (_) {}
   try { bridge.setOrientation && bridge.setOrientation(['portrait', 'auto'].includes(d.orientation) ? d.orientation : 'landscape'); } catch (_) {}
@@ -2312,7 +2437,10 @@ export function setOnline(on) {
   wakeRender();
   if (on && online !== true) { loadConfig(); loadQuotas(); loadWork(); loadPush(); loadApprovals(); loadCalendar(); }
   const changed = online !== on;
+  if (!on && changed) unreachableSince = unreachableSince || Date.now();
+  if (on && changed) unreachableSince = 0;
   online = on;
+  reconcileUnreachableNight();
   if (changed) emit('state');
 }
 

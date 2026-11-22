@@ -1,4 +1,4 @@
-import { $, API, D, LEVEL_COLOR, LOCALE, mediaHtml, METRICS, PANEL_HEADERS, PREVIEW, Q_STYLE, S_ORDER, ago, api, averageColor, buildLayout, buzz, cfg, chime, cfgVersion, chart, color, cssVar, currentProcessesSort, emit, fillIcon, fmtClock, fmtDur, fmtHM, fmtMem, fmtReset, fmtTime, fmtValue, gotoProcesses, gpuMem, gpusOf, h, en, haptic, hasProcessesPage, hist, hour12, icon, keyButton, setKeyFace, labelled, levelOf, media, metricText, online, openSheet, paceInfo, pad, prRow, pushView, quotaProviders, r1, registerProcessesSorter, renderStatus, ringSvg, setArtColor, configMark, configReadSince, localWriteStored, setMediaState, setVolDragging, shortDur, shortGpu, store, t, tick, toast, volDragging, wxBlock, wxDeg, wxIcon, emo, rich } from '../main.js';
+import { $, API, D, LEVEL_COLOR, LOCALE, mediaHtml, METRICS, PANEL_HEADERS, PREVIEW, Q_STYLE, S_ORDER, ago, api, averageColor, buildLayout, buzz, cfg, chime, cfgVersion, chart, color, cssVar, currentProcessesSort, emit, fillIcon, fmtClock, fmtDur, fmtHM, fmtMem, fmtReset, fmtTime, fmtValue, gotoProcesses, gpuMem, gpusOf, h, en, haptic, hasProcessesPage, hist, hour12, icon, keyButton, setKeyFace, labelled, levelOf, media, metricText, online, openSheet, paceInfo, pad, prRow, pushView, quotaProviders, r1, registerProcessesSorter, renderStatus, ringSvg, setArtColor, configMark, configReadSince, localWriteStored, setMediaState, setVolDragging, shortDur, shortGpu, store, t, tick, toast, volDragging, wxBlock, wxDeg, wxIcon, emo, rich, tp, tpv, quotaText } from '../main.js';
 import { W } from '../registry.js';
 import { invalidateDeckState } from './controls.js';
 
@@ -252,7 +252,7 @@ W.media = {
         if (!m) {
           endScrub(false);
           box.classList.remove('playing');
-          q('.m-app-name').textContent = 'Media';
+          q('.m-app-name').textContent = tp('Media');
           sourceIcon.replaceChildren();
           q('.m-title').textContent = t('w.nothingPlaying');
           q('.m-artist').textContent = t('w.pressToResume');
@@ -263,9 +263,9 @@ W.media = {
           return;
         }
         box.classList.toggle('playing', m.playing);
-        q('.m-app-name').textContent = m.app || 'Media';
+        q('.m-app-name').textContent = m.app || tp('Media');
         sourceIcon.innerHTML = sourceIcons[m.app] || '';
-        q('.m-title').textContent = m.title || 'Unknown track';
+        q('.m-title').textContent = m.title || tp('Unknown track');
         q('.m-artist').textContent = [m.artist, m.album].filter(Boolean).join(' · ') || '—';
         if (!(m.durMs > 0) && m.app !== 'Internet Radio') {
           q('.m-pos').textContent = '';
@@ -273,7 +273,7 @@ W.media = {
         } else if (m.app === 'Internet Radio' && !(m.durMs > 0)) {
           q('.fill').style.width = m.playing ? '100%' : '0';
           q('.m-pos').textContent = fmtTime(m.posMs || 0);
-          q('.m-dur').textContent = m.playing ? 'LIVE' : '0:00';
+          q('.m-dur').textContent = m.playing ? tp('LIVE') : '0:00';
         } else {
           q('.m-dur').textContent = fmtTime(m.durMs);
         }
@@ -306,7 +306,7 @@ W.stat = {
     const c = color(m.color);
     box.style.setProperty('--c', c);
     const canvas = h('canvas');
-    const lbl = h('div', 't-label', m.label);
+    const lbl = h('div', 't-label', tp(m.label));
     const val = h('b', null, '—'), unit = h('small'), sub = h('div', 't-sub', ' ');
     box.append(canvas, lbl, h('div', 't-val', val, unit), sub);
     if (o.metric === 'cpu' || o.metric === 'ram') bindProcessLink(box, o.metric === 'cpu' ? 'cpu' : 'mem');
@@ -318,7 +318,7 @@ W.stat = {
         val.textContent = v;
         unit.textContent = u;
         const pctVal = m.pct?.(s);
-        lbl.textContent = pctVal != null && m.label === 'RAM' ? `RAM (${Math.round(pctVal)}%)` : m.label;
+        lbl.textContent = pctVal != null && m.label === 'RAM' ? `RAM (${Math.round(pctVal)}%)` : tp(m.label);
         sub.textContent = m.sub?.(s) || ' ';
         chart(canvas, [{ data: hist[m.hist || o.metric] || hist.cpu, color: c, max: m.max(s) }]);
       },
@@ -332,7 +332,7 @@ W.gauge = {
     const m = METRICS[o.metric] || METRICS.cpu;
     box.style.setProperty('--q', color(m.color));
     const dial = h('div', 'g-dial'), pct = h('div', 'g-val'), sub = h('div', 'g-sub');
-    box.append(dial, h('div', 'g-label', m.label), sub);
+    box.append(dial, h('div', 'g-label', tp(m.label)), sub);
     dial.append(pct);
     if (o.metric === 'cpu' || o.metric === 'ram') bindProcessLink(box, o.metric === 'cpu' ? 'cpu' : 'mem');
     let svg = null;
@@ -363,7 +363,7 @@ W.chart = {
     if (!keys.length) keys.push('cpu');
     const single = keys.length === 1 ? METRICS[keys[0]] : null;
     const isNet = keys.every((k) => k === 'down' || k === 'up');
-    const label = single ? single.name : isNet ? 'Network' : keys.map((k) => METRICS[k].name).join(' · ');
+    const label = single ? tp(single.name) : isNet ? tp('Network') : keys.map((k) => tp(METRICS[k].name)).join(' · ');
     box.style.setProperty('--c', color((single || METRICS[keys[0]]).color));
     const head = h('div', 's-head', h('span', 's-label', label), h('span', 's-name', ''));
     const main = h('div', 's-main');
@@ -382,11 +382,11 @@ W.chart = {
           main.replaceChildren(...keys.map((k) => {
             const mm = METRICS[k];
             const [v, u] = metricText(mm, s);
-            const e = h('span', 'multi', (k === 'down' ? '↓ ' : k === 'up' ? '↑ ' : mm.label + ' '), h('b', null, v + ' ' + u));
+            const e = h('span', 'multi', (k === 'down' ? '↓ ' : k === 'up' ? '↑ ' : tp(mm.label) + ' '), h('b', null, v + ' ' + u));
             e.style.color = color(mm.color);
             return e;
           }));
-          head.lastChild.textContent = isNet && s.ping ? `Ping ${s.ping.ms != null ? Math.round(s.ping.ms) + ' ms' : '—'} · loss ${s.ping.lossPct}%` : '';
+          head.lastChild.textContent = isNet && s.ping ? tpv('Ping {ms} · loss {loss}%', { ms: s.ping.ms != null ? Math.round(s.ping.ms) + ' ms' : '—', loss: s.ping.lossPct }) : '';
         }
         chart(canvas, keys.map((k) => ({ data: hist[METRICS[k].hist || k], color: color(METRICS[k].color), max: METRICS[k].max(s) })), { grid: true });
       },
@@ -413,16 +413,16 @@ W.meters = {
         const pc = D.state?.pc;
         if (!pc) return;
         const s = pc.uptimeSec, d = Math.floor(s / 86400), hr = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-        up.textContent = 'Up ' + (d ? `${d} d ${hr} h` : hr ? `${hr} h ${m} min` : `${m} min`);
+        up.textContent = tp('Up ') + (d ? `${d} d ${hr} h` : hr ? `${hr} h ${m} min` : `${m} min`);
         const rows = [meter('RAM', `${r1(pc.ramUsedGb)} / ${Math.round(pc.ramTotalGb)} GB`, (pc.ramUsedGb / pc.ramTotalGb) * 100)];
         // one row per GPU (the integrated one counts its shared memory); named once there is more than one
         const gpus = gpusOf(D.state);
         for (const g of gpus) {
           const m = gpuMem(g);
-          if (m) rows.push(meter(gpus.length > 1 ? `${m.label === 'VRAM' ? 'VRAM' : 'GPU'} · ${shortGpu(g.name)}` : m.label === 'VRAM' ? 'VRAM' : 'GPU MEMORY',
+          if (m) rows.push(meter(gpus.length > 1 ? `${m.label === 'VRAM' ? 'VRAM' : 'GPU'} · ${shortGpu(g.name)}` : m.label === 'VRAM' ? 'VRAM' : tp('GPU MEMORY'),
             `${r1(m.used)} / ${Math.round(m.total)} GB`, (m.used / m.total) * 100, cssVar('--gpu')));
         }
-        const disks = h('div', 'disks', ...(pc.disks || []).map((dk) => meter(dk.name === '/' ? 'DISK' : dk.name, Math.round((dk.usedGb / dk.totalGb) * 100) + '%', (dk.usedGb / dk.totalGb) * 100, '#94a3b8')));
+        const disks = h('div', 'disks', ...(pc.disks || []).map((dk) => meter(dk.name === '/' ? tp('DISK') : dk.name, Math.round((dk.usedGb / dk.totalGb) * 100) + '%', (dk.usedGb / dk.totalGb) * 100, '#94a3b8')));
         list.replaceChildren(...rows, disks);
       },
     };
@@ -436,7 +436,7 @@ W.quotas = {
    */
   create(box, { o }) {
     const tokens = (n) => n == null ? '—' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
-    const grid = h('div', 'q-grid', h('div', 'empty', 'Quota data arrives once the computer is connected.'));
+    const grid = h('div', 'q-grid', h('div', 'empty', tp('Quota data arrives once the computer is connected.')));
     box.append(grid);
     let last = 0;
     let offset = 0;
@@ -498,13 +498,13 @@ W.quotas = {
       const updStr = age != null ? `checked ${age < 60_000 ? 'just now' : fmtDur(age) + ' ago'}` : '';
       card.appendChild(h('div', 'q-head',
         h('span', 'q-logo', emo('📊')),
-        h('span', 'q-name', 'Overview'),
+        h('span', 'q-name', tp('Overview')),
         h('span', 'q-plan', `${days}-day spend`),
         updStr ? h('span', 'q-upd', updStr) : null
       ));
       const summary = h('div', 'q-ov-hero',
-        h('div', 'q-ov-stat', h('span', 'q-ov-lbl', 'Estimated spend'), h('strong', 'q-ov-val', fmtCurrency(ov.totalCost, ov.currencyCode))),
-        h('div', 'q-ov-stat', h('span', 'q-ov-lbl', 'Recorded tokens'), h('strong', 'q-ov-val', tokens(ov.totalTokens || 0)))
+        h('div', 'q-ov-stat', h('span', 'q-ov-lbl', tp('Estimated spend')), h('strong', 'q-ov-val', fmtCurrency(ov.totalCost, ov.currencyCode))),
+        h('div', 'q-ov-stat', h('span', 'q-ov-lbl', tp('Recorded tokens')), h('strong', 'q-ov-val', tokens(ov.totalTokens || 0)))
       );
       card.appendChild(summary);
       const details = h('div', 'q-details q-ov-details');
@@ -531,7 +531,7 @@ W.quotas = {
       const want = getProviders();
       const list = getItems();
       grid.replaceChildren();
-      if (!list.length) { grid.appendChild(h('div', 'empty', want.length ? 'Quota data is unavailable for the selected providers' : 'No quota providers enabled')); return; }
+      if (!list.length) { grid.appendChild(h('div', 'empty', want.length ? tp('Quota data is unavailable for the selected providers') : tp('No quota providers enabled'))); return; }
 
       const ps = getPageSize();
       const needsPaging = isRotateEnabled() && ps > 0 && list.length > ps;
@@ -571,21 +571,21 @@ W.quotas = {
           const pctEl = h('div', 'q-pct', String(Math.round(l.percent)), h('small', null, '%'));
           if (compact) pctEl.style.fontSize = 'calc(22px * var(--widget-font-scale, 1))';
           dial.appendChild(pctEl);
-          rings.appendChild(h('div', 'q-ring', dial, h('div', 'q-label', l.label), p.id === 'codex' ? h('div', 'q-left', `${Math.max(0, Math.round(100 - l.percent))}% left`) : null, h('div', 'q-reset', fmtReset(l.resetsAt)),
+          rings.appendChild(h('div', 'q-ring', dial, h('div', 'q-label', quotaText(l.label)), p.id === 'codex' ? h('div', 'q-left', tpv('{n}% left', { n: Math.max(0, Math.round(100 - l.percent)) })) : null, h('div', 'q-reset', fmtReset(l.resetsAt)),
             pace ? h('div', 'q-pace ' + pace.cls, pace.text) : null));
         }
-        if (!p.limits.length) rings.appendChild(h('div', 'q-reset', 'No data'));
+        if (!p.limits.length) rings.appendChild(h('div', 'q-reset', tp('No data')));
         card.append(rings);
         if (p.id === 'codex' && p.codex) {
           const c = p.codex;
           const details = h('div', 'q-details');
-          if (c.model) details.append(h('div', 'q-detail', h('span', null, 'Latest local session'), h('strong', null, c.model + (c.effort ? ` · ${c.effort}` : ''))));
-          if (c.totalTokens != null) details.append(h('div', 'q-detail', h('span', null, 'Session tokens'), h('strong', null, tokens(c.totalTokens))));
-          if (c.totalInput != null || c.totalOutput != null) details.append(h('div', 'q-detail q-breakdown', `In ${tokens(c.totalInput)} · Out ${tokens(c.totalOutput)} · Cached ${tokens(c.totalCached)} · Reasoning ${tokens(c.totalReasoning)}`));
-          if (c.lastInput != null && c.contextWindow) details.append(h('div', 'q-detail q-breakdown', `Last input ${tokens(c.lastInput)} / ${tokens(c.contextWindow)} context window`));
+          if (c.model) details.append(h('div', 'q-detail', h('span', null, tp('Latest local session')), h('strong', null, c.model + (c.effort ? ` · ${c.effort}` : ''))));
+          if (c.totalTokens != null) details.append(h('div', 'q-detail', h('span', null, tp('Session tokens')), h('strong', null, tokens(c.totalTokens))));
+          if (c.totalInput != null || c.totalOutput != null) details.append(h('div', 'q-detail q-breakdown', tpv('In {in} · Out {out} · Cached {cached} · Reasoning {reasoning}', { in: tokens(c.totalInput), out: tokens(c.totalOutput), cached: tokens(c.totalCached), reasoning: tokens(c.totalReasoning) })));
+          if (c.lastInput != null && c.contextWindow) details.append(h('div', 'q-detail q-breakdown', tpv('Last input {n} / {max} context window', { n: tokens(c.lastInput), max: tokens(c.contextWindow) })));
           if (details.childNodes.length) card.append(details);
         }
-        card.append(h('div', 'q-foot', h('span', p.extra?.startsWith('Limit reached') ? 'q-alert' : null, p.extra || ''), p.error ? h('span', 'q-err', p.error) : h('span')));
+        card.append(h('div', 'q-foot', h('span', p.extra?.startsWith('Limit reached') ? 'q-alert' : null, quotaText(p.extra) || ''), p.error ? h('span', 'q-err', p.error) : h('span')));
 
         grid.appendChild(card);
       }
@@ -661,10 +661,15 @@ W.sessions = {
     box.append(h('div', 'w-head', h('span', 's-label', t('w.sessions')), sum), list);
     box.style.setProperty('--c', '#d97757');
     const tokens = (n) => n == null ? '—' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
-    const statusText = (s) => s.status === 'busy' ? t('sess.working') : s.status === 'waiting' ? t('sess.waiting') : s.status === 'shell' ? t('sess.shell') : s.outcome === 'completed' ? t('sess.completed') : s.outcome === 'aborted' ? t('sess.aborted') : t('sess.idle');
+    const statusText = (s) => s.status === 'busy' ? t('sess.working') : s.status === 'waiting' ? t('sess.waiting') : s.status === 'shell' ? t('sess.shell') : s.outcome === 'completed' ? t('sess.completed') : s.outcome === 'failed' ? t('sess.failed') : s.outcome === 'aborted' ? t('sess.aborted') : t('sess.idle');
+    // The tool each session comes from: one glyph in the list, a glyph and a name in the details panel.
+    const toolIcon = (tool) => tool === 'claude' ? '✳' : tool === 'codex' ? '◎' : tool === 'cursor' ? '◆' : tool === 'opencode' ? '◈' : tool === 'antigravity' ? Q_STYLE.antigravity.logo : '◎';
+    const toolTitle = (tool) => tool === 'claude' ? 'Claude Code' : tool === 'codex' ? 'Codex' : tool === 'cursor' ? 'Cursor' : tool === 'opencode' ? 'OpenCode' : tool === 'antigravity' ? 'Antigravity' : 'Codex';
     const ageText = (since) => Date.now() - since < 60_000 ? 'just now' : shortDur(Date.now() - since) + ' ago';
-    // A Claude Code chat's title (the agent sends it only when Settings › Claude Code › "Show session titles on the phone"
-    // is on) is the main label and the folder goes under it; without a title the folder is the label, as before.
+    // A session's title is the main label and the project folder goes under it: Claude Code sends it only while
+    // Settings › Claude Code › "Show session titles on the phone" is on, OpenCode only while "Show OpenCode session
+    // titles" is on, and Antigravity only while "Show Antigravity chat titles on the phone" is on; without a title
+    // the folder is the label, as before.
     const titleOf = (s) => s.title || s.project || s.name;
     const folderOf = (s) => (s.title ? s.project : '');
     // A Claude Code chat's recent steps, last exchange and message list. The agent sends them only when Settings › Claude Code
@@ -679,32 +684,32 @@ W.sessions = {
       const toolName = (n) => n.startsWith('mcp__') ? n.slice(5).replace(/__/g, ' › ') : n;
       const clip = (text, n) => text.length > n ? text.slice(0, n) + '…' : text;
       const message = (m, full) => h('div', 'conv-msg ' + m.role,
-        h('span', 'conv-who', m.role === 'user' ? 'You' : 'Claude'),
+        h('span', 'conv-who', m.role === 'user' ? tp('You') : 'Claude'),
         h('div', full ? 'conv-text' : 'conv-text clamp', full ? m.text : clip(m.text, 500)));
       const render = () => {
         const prevList = box.querySelector('.conv-list');
         const top = prevList ? prevList.scrollTop : null;
         labels = [];
         if (!data.enabled) {
-          box.replaceChildren(h('p', 'session-note', 'The conversation is off. Turn it on in Settings › Claude Code › Show the conversation on the phone.'));
+          box.replaceChildren(h('p', 'session-note', tp('The conversation is off. Turn it on in Settings › Claude Code › Show the conversation on the phone.')));
           return;
         }
         const messages = data.messages || [], steps = data.steps || [];
         const kids = [];
         if (steps.length) {
-          kids.push(h('div', 'conv-h', 'Recent steps'));
+          kids.push(h('div', 'conv-h', tp('Recent steps')));
           for (const st of [...steps].reverse().slice(0, 6)) {
             const age = h('span', 'cs-a', stepAge(st));
             labels.push([age, st]);
             kids.push(h('div', 'conv-step' + (st.running ? ' on' : ''), h('span', 'cs-t', toolName(st.tool)), h('span', 'cs-d', st.detail || ''), age));
           }
         }
-        if (!messages.length) kids.push(h('p', 'session-note', 'No messages yet.'));
+        if (!messages.length) kids.push(h('p', 'session-note', tp('No messages yet.')));
         else if (expanded) {
-          kids.push(h('div', 'conv-h', 'Conversation'), h('div', 'conv-list', messages.map((m) => message(m, true))));
+          kids.push(h('div', 'conv-h', tp('Conversation')), h('div', 'conv-list', messages.map((m) => message(m, true))));
         } else {
           const lastOf = (role) => [...messages].reverse().find((m) => m.role === role);
-          kids.push(h('div', 'conv-h', 'Last exchange'));
+          kids.push(h('div', 'conv-h', tp('Last exchange')));
           for (const m of [lastOf('user'), lastOf('assistant')]) if (m) kids.push(message(m, false));
         }
         if (messages.length) {
@@ -729,7 +734,7 @@ W.sessions = {
           // of the steps move on with the clock either way
           if (JSON.stringify(d) !== JSON.stringify(data)) { data = d; render(); } else refreshLabels();
         } catch (_) {
-          if (!gone && !data) box.replaceChildren(h('p', 'session-note', 'Could not read the conversation.'));
+          if (!gone && !data) box.replaceChildren(h('p', 'session-note', tp('Could not read the conversation.')));
         }
       };
       load();
@@ -744,13 +749,13 @@ W.sessions = {
       panel.setAttribute('aria-modal', 'true');
       const title = h('h2', null, titleOf(s));
       const close = h('button', 'session-close', icon('x'));
-      close.setAttribute('aria-label', 'Close session details');
+      close.setAttribute('aria-label', tp('Close session details'));
       let stopConversation = () => {};
       const onKey = (e) => { if (e.key === 'Escape') dismiss(); };
       const dismiss = () => { stopConversation(); backdrop.remove(); document.removeEventListener('keydown', onKey); };
       close.addEventListener('click', dismiss);
       backdrop.addEventListener('click', (e) => { if (e.target === backdrop) dismiss(); });
-      panel.append(h('div', 'session-panel-head', h('span', null, s.tool === 'codex' ? '◎ Codex' : s.tool === 'cursor' ? '◆ Cursor' : '✳ Claude Code'), close), title);
+      panel.append(h('div', 'session-panel-head', h('span', null, toolIcon(s.tool) + ' ' + toolTitle(s.tool)), close), title);
       const rows = [
         ['Folder', folderOf(s) || null],
         ['Status', statusText(s)],
@@ -767,8 +772,8 @@ W.sessions = {
       ];
       // a small label over each value, four to a row: the facts take one line instead of four
       panel.append(h('div', 'session-grid', rows.filter(([, value]) => value != null)
-        .map(([label, value]) => h('div', 'session-cell', h('span', null, label), h('strong', null, value)))));
-      if (s.tool === 'codex') panel.append(h('p', 'session-note', 'Token totals are for this local session, not your account allowance.'));
+        .map(([label, value]) => h('div', 'session-cell', h('span', null, tp(label)), h('strong', null, value)))));
+      if (s.tool === 'codex' || (s.tool === 'antigravity' && s.totalTokens != null)) panel.append(h('p', 'session-note', tp('Token totals are for this local session, not your account allowance.')));
       if (s.tool === 'claude') stopConversation = conversationSection(panel, s);
       backdrop.append(panel);
       document.body.append(backdrop);
@@ -789,7 +794,7 @@ W.sessions = {
         const sorted = [...sessions].sort((a, b) => (S_ORDER[a.status] ?? 9) - (S_ORDER[b.status] ?? 9) || b.since - a.since);
         const rows = sorted.length ? sorted.map((s) => {
           const row = h('button', 'sess ' + s.status,
-            h('span', 'st'), h('span', 'tl ' + s.tool, s.tool === 'claude' ? '✳' : s.tool === 'cursor' ? '◆' : '◎'),
+            h('span', 'st'), h('span', 'tl ' + s.tool, toolIcon(s.tool)),
             h('span', 'sess-main', h('span', 'nm', titleOf(s)), h('span', 'sess-meta', [folderOf(s), [s.model, s.effort].filter(Boolean).join(' · ') || statusText(s)].filter(Boolean).join(' · '))),
             h('span', 'ds', shortDur(Date.now() - s.since)));
           row.type = 'button';
@@ -807,10 +812,10 @@ W.github = {
   create(box) {
     box.style.setProperty('--c', '#c9d1d9');
     const user = h('span', 'w-sum'), bell = h('span', 'gh-bell');
-    const rc = h('b'), mc = h('b'), rev = h('div', 'gh-list'), mine = h('div', 'gh-list'), err = h('div', 'gh-err', 'Waiting for GitHub data…');
+    const rc = h('b'), mc = h('b'), rev = h('div', 'gh-list'), mine = h('div', 'gh-list'), err = h('div', 'gh-err', tp('Waiting for GitHub data…'));
     box.append(h('div', 'w-head', h('span', 's-label', 'GitHub'), user, bell),
-      h('div', 'gh-sec', h('span', null, 'Review requests'), rc), rev,
-      h('div', 'gh-sec', h('span', null, 'My pull requests'), mc), mine, err);
+      h('div', 'gh-sec', h('span', null, tp('Review requests')), rc), rev,
+      h('div', 'gh-sec', h('span', null, tp('My pull requests')), mc), mine, err);
     return {
       update() {
         const g = D.work?.github;
@@ -1003,7 +1008,9 @@ W.calendar = {
         const y = now.getFullYear(), m = now.getMonth();
         const first = new Date(y, m, 1), days = new Date(y, m + 1, 0).getDate();
         const lead = (first.getDay() + 6) % 7; // Monday first
-        const cells = ['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => h('span', 'cal-h' + (i > 4 ? ' we' : ''), d));
+        const weekday = new Intl.DateTimeFormat(LOCALE, { weekday: 'narrow' });
+        const cells = Array.from({ length: 7 }, (_, i) =>
+          h('span', 'cal-h' + (i > 4 ? ' we' : ''), weekday.format(new Date(2024, 0, i + 1)))); // Monday, Jan 1
         const prevDays = new Date(y, m, 0).getDate();
         for (let i = 0; i < lead; i++) cells.push(h('span', 'cal-d out', prevDays - lead + 1 + i));
         for (let d = 1; d <= days; d++) {
@@ -1015,7 +1022,7 @@ W.calendar = {
         const grid = h('div', 'cal', cells);
         grid.style.gridTemplateRows = `auto repeat(${total / 7 - 1}, 1fr)`;
         box.replaceChildren(h('div', 'w-title', now.toLocaleDateString(LOCALE, { month: 'long', year: 'numeric' }),
-          h('span', 'w-sub', 'Week ' + isoWeek(now))), grid);
+          h('span', 'w-sub', tp('Week ') + isoWeek(now))), grid);
       },
     };
   },
@@ -1122,7 +1129,7 @@ W.pomodoro = {
         const next = plan[st.step].kind;
         toast(finished ? 'Sequence finished, well done'
           : next === 'long' ? 'Time for a long break' : next === 'break' ? 'Time for a break'
-            : was === 'focus' ? 'Next focus session' : 'Back to focus', 'ok', '🍅 Pomodoro', 5);
+            : was === 'focus' ? tp('Next focus session') : tp('Back to focus'), 'ok', '🍅 Pomodoro', 5);
       }
       const left = remaining();
       const kind = plan[st.step].kind;
@@ -1179,7 +1186,7 @@ W.countdown = {
       }
     }
     const big = h('div', 'cd-v'), sub = h('div', 'cd-s');
-    box.append(h('div', 'cd-l', o.label || 'Countdown'), big, sub);
+    box.append(h('div', 'cd-l', o.label || tp('Countdown')), big, sub);
     if (Number.isNaN(target)) { big.textContent = '—'; sub.textContent = t('w.setDateFormat'); return {}; }
     sub.textContent = new Date(target).toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) + ', ' + fmtHM(new Date(target));
     return {
@@ -1385,7 +1392,7 @@ W.inbox = {
   needs: ['notes', 'tick'],
   create(box) {
     const list = h('div', 'inbox');
-    const clear = h('button', 'mini-btn', 'Clear');
+    const clear = h('button', 'mini-btn', tp('Clear'));
     clear.addEventListener('click', () => { haptic(); D.notes = []; store.set('notes', []); emit('notes'); });
     box.append(h('div', 'w-title', en('Notifications'), clear), list);
     let shown = '';

@@ -134,6 +134,67 @@ public static class Shortcuts
     private static void PressKeys(string spec) { if (TestKeys is { } t) t(spec); else KeySender.SendKeys(spec); }
     private static void TypeOut(string text) { if (TestType is { } t) t(text); else KeySender.TypeText(text); }
 
+    private const string ClipboardTag = "{clipboard}";
+    private const int MaxClipboardChars = 10_000;
+
+    /// <summary>How long a paste: step leaves its text on the clipboard after the paste keys, so the program has read it.</summary>
+    internal static int PasteSettleMs = 400;
+
+    /// <summary>
+    /// Replaces {clipboard} with the text on the clipboard (at most 10,000 characters, so a copied page is not typed out
+    /// for minutes). The clipboard is read only when the text asks for it, and its content never leaves the agent.
+    /// </summary>
+    internal static string WithClipboard(string text)
+    {
+        if (!text.Contains(ClipboardTag, StringComparison.Ordinal)) return text;
+        var clip = Clipboard.GetText();
+        if (clip.Length > MaxClipboardChars)
+        {
+            // not between the two halves of a character outside the BMP (an emoji): a lone half cannot be typed
+            var cut = char.IsHighSurrogate(clip[MaxClipboardChars - 1]) ? MaxClipboardChars - 1 : MaxClipboardChars;
+            clip = clip[..cut];
+        }
+        return text.Replace(ClipboardTag, clip, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Pastes the text through the clipboard (instant for long text, and right for any character) and puts back what was
+    /// on the clipboard, unless something else has been copied in the meantime. The text is kept out of Windows'
+    /// clipboard history and cloud clipboard. When the clipboard cannot be read, the pasted text stays on it.
+    /// </summary>
+    // one paste at a time: two overlapping runs (the phone, a rule, the Control Deck) would each save the other's
+    // pasted text as "what was copied" and put the wrong text back
+    private static readonly object PasteGate = new();
+
+    private static void PasteThroughClipboard(string text)
+    {
+        lock (PasteGate)
+        {
+            string? before;
+            try { before = Clipboard.GetText(); } catch (Exception ex) when (ex is InvalidOperationException or TimeoutException) { before = null; }
+            Clipboard.SetText(text, sensitive: true);
+            var pasted = false;
+            try
+            {
+                Thread.Sleep(40);
+                PressKeys(OperatingSystem.IsMacOS() ? "win+v" : "ctrl+v");
+                pasted = true;
+            }
+            finally
+            {
+                // also when the paste keys failed: the pasted text (a token, say) must not stay on the clipboard
+                if (before is not null)
+                {
+                    if (pasted) Thread.Sleep(PasteSettleMs);
+                    // the text that was copied comes back; a picture or files read as "" and cannot be put back, so the
+                    // clipboard is emptied instead of keeping the pasted text. Something copied in the meantime is left alone.
+                    try { if (Clipboard.GetText() == text) Clipboard.SetText(before, sensitive: true); }
+                    catch (Exception ex) when (ex is InvalidOperationException or TimeoutException) { }
+                }
+            }
+        }
+    }
+
     /// <returns>An error message, or null on success.</returns>
     public static string? Execute(Shortcut sc, ILogger log, AgentConfig? cfg = null, int depth = 0, PushStore? push = null, AudioControl? audio = null)
     {
@@ -147,7 +208,7 @@ public static class Shortcuts
                     PressKeys(sc.Args ?? "");
                     break;
                 case "builtin:text":
-                    TypeOut(sc.Args ?? "");
+                    TypeOut(WithClipboard(sc.Args ?? ""));
                     break;
                 case "builtin:macro":
                     if (depth > 3) throw new InvalidOperationException("macros call each other too deeply");
@@ -179,13 +240,15 @@ public static class Shortcuts
                         switch (kind)
                         {
                             case "keys": PressKeys(value); break;
-                            case "text": TypeOut(value); break;
+                            case "text": TypeOut(WithClipboard(value)); break;
+                            case "clipboard": Clipboard.SetText(WithClipboard(value)); break;
+                            case "paste": PasteThroughClipboard(WithClipboard(value)); break;
                             case "wait": Thread.Sleep(Math.Clamp(int.TryParse(value, out var ms) ? ms : 0, 0, 10_000)); break;
                             case "shortcut":
                                 var other = cfg?.Shortcuts.FirstOrDefault(s => s.Id == value) ?? throw new InvalidOperationException($"no such shortcut: {value}");
                                 if (RunCore(cfg, other, log, push, audio, depth + 1) is { } err) throw new InvalidOperationException(err);
                                 break;
-                            default: throw new InvalidOperationException($"unknown macro step \"{step}\" (use keys:, text:, wait:, shortcut: or if: … else … endif)");
+                            default: throw new InvalidOperationException($"unknown macro step \"{step}\" (use keys:, text:, clipboard:, paste:, wait:, shortcut: or if: … else … endif)");
                         }
                         Thread.Sleep(40);
                     }
@@ -199,8 +262,7 @@ public static class Shortcuts
                     LockWorkStation();
                     break;
                 case "builtin:monitor-off":
-                    // HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2 = off
-                    PostMessage(0xFFFF, 0x0112, 0xF170, 2);
+                    MonitorOff();
                     break;
                 case "builtin:mute":
                     Keys.Tap(Keys.VK_VOLUME_MUTE);
@@ -307,7 +369,25 @@ public static class Shortcuts
     }
     [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(int processId);
     [DllImport("user32.dll")] private static extern bool LockWorkStation();
-    [DllImport("user32.dll")] private static extern bool PostMessage(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    /// <summary>
+    /// Turns the display off with one WM_SYSCOMMAND / SC_MONITORPOWER, sent to a hidden window of the agent's own.
+    /// Broadcasting it (HWND_BROADCAST) put a copy in every top-level window's queue: on a Modern Standby PC the first
+    /// copy sent the PC to standby while the others were still queued, and after the wake each window handled its copy
+    /// and turned the display off again, on and off for about a minute (#335).
+    /// </summary>
+    private static void MonitorOff()
+    {
+        var window = CreateWindowEx(0, "STATIC", "", 0x80000000 /* WS_POPUP, never shown */, 0, 0, 0, 0, 0, 0, 0, 0);
+        if (window == 0) throw new InvalidOperationException($"could not turn the display off (error {Marshal.GetLastPInvokeError()})");
+        try { SendMessage(window, 0x0112 /* WM_SYSCOMMAND */, 0xF170 /* SC_MONITORPOWER */, 2 /* off */); }
+        finally { DestroyWindow(window); }
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern nint CreateWindowEx(uint exStyle, string className, string windowName, uint style,
+        int x, int y, int width, int height, nint parent, nint menu, nint instance, nint param);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern nint SendMessage(nint hWnd, uint msg, nint wParam, nint lParam);
+    [DllImport("user32.dll")] private static extern bool DestroyWindow(nint hWnd);
 #else
     private static void Unix(string tool, params string[] args)
     {

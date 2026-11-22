@@ -7,12 +7,17 @@ using System.Text.Json.Nodes;
 
 namespace PhoneBox.Agent;
 
-public sealed record DiscordMember(string Id, string Name, bool Muted, bool Deafened, string? Avatar);
-public sealed record DiscordChannel(string Id, string Name, string? Guild, string? GuildId, string? GuildIcon);
+public sealed record DiscordMember(string Id, string Name, bool Muted, bool Deafened, string? Avatar, bool Speaking = false);
+/// <param name="People">Who is in the voice channel: only read for favourites (see <see cref="DiscordFavorites"/>), null otherwise.</param>
+public sealed record DiscordChannel(string Id, string Name, string? Guild, string? GuildId, string? GuildIcon,
+    IReadOnlyList<DiscordMember>? People = null);
 public sealed record DiscordNotification(long Ts, string Title, string Body);
+/// <param name="InputMode">"VOICE_ACTIVITY" or "PUSH_TO_TALK" (Discord's input mode); null until Discord reported it.</param>
+/// <param name="PttKey">Whether a push-to-talk key is set in Discord: with push to talk on and no key, nobody hears you.</param>
 public sealed record DiscordSnapshot(bool Connected, string? Error, string? User, bool Muted, bool Deafened,
     string? ChannelId, string? ChannelName, string? ChannelKind, IReadOnlyList<DiscordMember> Members,
-    IReadOnlyList<DiscordChannel> Channels, IReadOnlyList<DiscordNotification> Notifications);
+    IReadOnlyList<DiscordChannel> Channels, IReadOnlyList<DiscordNotification> Notifications,
+    string? InputMode = null, bool PttKey = false);
 
 /// <summary>
 /// Discord through the desktop app's local IPC (the same one rich presence uses: a named pipe on Windows, a socket on
@@ -25,13 +30,14 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
 {
     private static readonly string[] Scopes = ["rpc", "rpc.voice.read", "rpc.voice.write", "rpc.notifications.read"];
     private const string Redirect = "http://127.0.0.1";
+    private static readonly string[] SpeakingEvents = ["SPEAKING_START", "SPEAKING_STOP"];
 
     private volatile DiscordSnapshot _snap = Empty(null);
     private readonly object _lock = new();
     private readonly List<DiscordNotification> _notes = [];
     internal readonly ConcurrentDictionary<string, TaskCompletionSource<JsonNode?>> _pending = new(); // internal for tests
     private readonly SemaphoreSlim _send = new(1, 1);
-    private Stream? _io;
+    internal Stream? _io; // internal for tests
 
     private static DiscordSnapshot Empty(string? error) => new(false, error, null, false, false, null, null, null, [], [], []);
 
@@ -52,7 +58,64 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
     public DiscordSnapshot Snapshot()
     {
         var wanted = NotesNow();
-        lock (_lock) return _snap with { Notifications = wanted ? [.. _notes] : [] };
+        lock (_lock)
+        {
+            var s = _snap;
+            var members = _speaking.Count == 0 || s.ChannelId != _speakingChannel ? s.Members
+                : [.. s.Members.Select(m => _speaking.Contains(m.Id) ? m with { Speaking = true } : m)];
+            return s with { Members = members, Notifications = wanted ? [.. _notes] : [] };
+        }
+    }
+
+    // Who is talking in the voice channel you are in, from Discord's SPEAKING_START / SPEAKING_STOP events (guarded by _lock).
+    private readonly HashSet<string> _speaking = [];
+    private string? _speakingChannel;
+
+    /// <summary>
+    /// The channel whose speaking events count. Setting it (on joining, switching or leaving a channel, and on
+    /// disconnect) forgets who was speaking, so a ring never carries over to another channel or a later call.
+    /// </summary>
+    internal string? SpeakingChannel
+    {
+        get { lock (_lock) return _speakingChannel; }
+        set { lock (_lock) { _speakingChannel = value; _speaking.Clear(); } }
+    }
+
+    /// <summary>
+    /// Moves the speaking subscriptions (covered by the rpc.voice.read scope) from the channel you were in to the one you
+    /// are in now, or sets them up again after a failure. No speaking event counts until both SPEAKING_START and
+    /// SPEAKING_STOP are in place: a START from the old channel, or one that arrives while only START is subscribed,
+    /// could leave a ring on that no STOP clears. False when Discord refused or didn't answer.
+    /// </summary>
+    internal async Task<bool> FollowSpeaking(string? from, string? to, CancellationToken ct)
+    {
+        SpeakingChannel = null;
+        try
+        {
+            if (from is not null)
+                foreach (var e in SpeakingEvents) await Request("UNSUBSCRIBE", new JsonObject { ["channel_id"] = from }, e, ct);
+            if (to is not null)
+                foreach (var e in SpeakingEvents) await Request("SUBSCRIBE", new JsonObject { ["channel_id"] = to }, e, ct);
+            SpeakingChannel = to;
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            log.LogDebug("discord: speaking events: {Msg}", ex.Message);
+            return false;
+        }
+    }
+
+    internal void ApplySpeaking(string evt, JsonNode? data)
+    {
+        var user = JsonStr((data as JsonObject)?["user_id"]);
+        var channel = JsonStr((data as JsonObject)?["channel_id"]);
+        lock (_lock)
+        {
+            // an event still on its way from the channel you just left, or one that arrives after leaving, is dropped
+            if (user is null || _speakingChannel is null || (channel is not null && channel != _speakingChannel)) return;
+            if (evt == "SPEAKING_START") _speaking.Add(user); else _speaking.Remove(user);
+        }
     }
 
     /// <summary>The user cancelled, the approval timed out or Discord refused the secret: retrying cannot help until the settings change.</summary>
@@ -108,6 +171,7 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
         _io = io;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var reader = Task.Run(() => ReadLoop(io, stop.Token), CancellationToken.None);
+        Task<Dictionary<string, IReadOnlyList<DiscordMember>>>? roomsTask = null; // reads beside the loop, so a slow answer never holds up mute or deafen
         try
         {
             _snap = Empty("Waiting for you to approve PhoneBox in Discord…");
@@ -118,6 +182,10 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
             _guildChannels.Clear();
             var channelsAt = DateTime.MinValue;
             var channelsEvery = TimeSpan.FromSeconds(60);
+            var rooms = new Dictionary<string, IReadOnlyList<DiscordMember>>(); // favourite voice channels: who is in them
+            long roomsAt = 0; // when the last read was started
+            string? speakingFor = null;
+            long speakingRetryAt = 0; // after a failed (un)subscribe: when to set the channel's subscriptions up again
             while (!ct.IsCancellationRequested && !reader.IsCompleted && config.Get().Discord.Enabled)
             {
                 // Notification text (DM content) is only asked for, and only sent on, while a widget shows it.
@@ -134,20 +202,39 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
                     channelsEvery = await RefreshVoiceChannels(ct) ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(10);
                     channelsAt = DateTime.UtcNow;
                 }
-                var channels = _guildChannels.Values.SelectMany(v => v).ToList();
+                var known = _guildChannels.Values.SelectMany(v => v).ToList();
+                var wanted = DiscordFavorites.WantedRooms(config.Get(), known);
+                if (roomsTask is { IsCompleted: true })
+                {
+                    if (roomsTask.IsCompletedSuccessfully) rooms = await roomsTask;
+                    roomsTask = null;
+                }
+                if (wanted.Count > 0 && roomsTask is null && (roomsAt == 0 || Environment.TickCount64 - roomsAt > 10_000))
+                {
+                    roomsAt = Environment.TickCount64;
+                    roomsTask = ReadRooms(wanted, stop.Token, stillWanted: id => DiscordFavorites.WantedRooms(config.Get(), known).Any(c => c.Id == id));
+                }
+                // only what is wanted right now: a favourite removed since the read started shows nobody any more
+                var show = wanted.Select(c => c.Id).ToHashSet();
+                List<DiscordChannel> channels = [.. known.Select(c => show.Contains(c.Id) && rooms.TryGetValue(c.Id, out var p) ? c with { People = p } : c)];
                 var rev = Volatile.Read(ref _voiceRev);
                 var vs = await Request("GET_VOICE_SETTINGS", null, null, ct);
                 var sel = await Request("GET_SELECTED_VOICE_CHANNEL", null, null, ct);
-                var members = sel?["voice_states"]?.AsArray().Select(v => new DiscordMember(
-                    v?["user"]?["id"]?.GetValue<string>() ?? "",
-                    v?["nick"]?.GetValue<string>() ?? v?["user"]?["global_name"]?.GetValue<string>() ?? v?["user"]?["username"]?.GetValue<string>() ?? "?",
-                    v?["voice_state"]?["mute"]?.GetValue<bool>() == true || v?["voice_state"]?["self_mute"]?.GetValue<bool>() == true,
-                    v?["voice_state"]?["deaf"]?.GetValue<bool>() == true || v?["voice_state"]?["self_deaf"]?.GetValue<bool>() == true,
-                    v?["user"]?["avatar"]?.GetValue<string>())).ToList() ?? [];
+                var selId = sel?["id"]?.GetValue<string>();
+                if (selId != speakingFor || (speakingRetryAt != 0 && Environment.TickCount64 >= speakingRetryAt))
+                {
+                    // A failure only costs the rings for this channel and the rest of the widget keeps working; the
+                    // channel's two subscriptions are set up again from scratch, at most every 30 s.
+                    speakingRetryAt = await FollowSpeaking(speakingFor, selId, ct) ? 0 : Environment.TickCount64 + 30_000;
+                    speakingFor = selId;
+                }
+                var members = MembersOf(sel?["voice_states"]);
                 var kind = sel?["type"]?.GetValue<int>() switch { 1 => "call", 3 => "group call", 2 => "voice", 13 => "stage", _ => sel is null ? null : "voice" };
+                var (inputMode, pttKey) = InputModeOf(vs);
                 PublishPoll(rev, vs?["mute"]?.GetValue<bool>() == true, vs?["deaf"]?.GetValue<bool>() == true,
                     new DiscordSnapshot(true, null, user, false, false,
-                        sel?["id"]?.GetValue<string>(), sel is null ? null : (sel["name"]?.GetValue<string>() ?? (kind == "call" ? "Direct call" : "Call")), kind, members, channels, []));
+                        sel?["id"]?.GetValue<string>(), sel is null ? null : (sel["name"]?.GetValue<string>() ?? (kind == "call" ? "Direct call" : "Call")), kind, members, channels, [],
+                        inputMode, pttKey));
                 await Task.Delay(2000, ct);
             }
         }
@@ -155,8 +242,10 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
         {
             _io = null;
             _notesWanted = false;
+            SpeakingChannel = null;
             stop.Cancel();
             try { await reader; } catch { }
+            if (roomsTask is not null) try { await roomsTask; } catch { }
             lock (_lock)
             {
                 _notes.Clear();
@@ -177,11 +266,11 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
         {
             try { return await Auth(tokens.Access, ct); } catch (Exception ex) { log.LogInformation("discord: saved login no longer works ({Msg})", ex.Message); }
         }
-        const string retry = " PhoneBox will not ask again until you change the Discord settings (or turn Discord off and on).";
+        const string retry = " PhoneBox will not ask again until you change the Discord settings (or turn Discord off and save, wait a few seconds, then turn it on and save again).";
         JsonNode? granted;
         try { granted = await Request("AUTHORIZE", AuthorizeArgs(cfg.ClientId), null, ct, TimeSpan.FromMinutes(2)); }
         catch (TimeoutException) { throw new LoginRefusedException("PhoneBox was not approved in Discord in time." + retry); }
-        catch (Exception ex) when (ex is not (OperationCanceledException or IOException)) { throw new LoginRefusedException($"Discord login was refused ({ex.Message})." + retry); }
+        catch (Exception ex) when (ex is not (OperationCanceledException or IOException)) { throw new LoginRefusedException(Refusal(ex.Message) + retry); }
         // no answer at all means the connection ended (Discord closed or restarted): that is not a refusal
         var code = granted?["code"]?.GetValue<string>() ?? throw new IOException("Discord closed the connection");
         try { tokens = await Exchange(cfg, new() { ["grant_type"] = "authorization_code", ["code"] = code, ["redirect_uri"] = Redirect }, ct); }
@@ -198,15 +287,27 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
     }
 
     /// <summary>
-    /// The AUTHORIZE request. It names the same redirect as the token exchange: Discord refuses an AUTHORIZE without one
-    /// (<c>invalid_request: Missing "redirect_uri"</c>), even though the code comes back over IPC, not to the redirect.
+    /// The AUTHORIZE request over Discord's local socket. <c>redirect_uri</c> is only allowed over the WebSocket
+    /// transport: over IPC it is refused with "Redirect URI cannot be used in the RPC OAuth2 Authorization flow" (#338,
+    /// #343). With <c>response_type: code</c> and no redirect, Discord uses the application's first registered
+    /// redirect, which the token exchange then names (<see cref="Redirect"/>). An application with no saved redirect
+    /// gets <c>invalid_request: Missing "redirect_uri"</c>, with or without <c>response_type</c> (#316, <see cref="Refusal"/>).
     /// </summary>
     internal static JsonObject AuthorizeArgs(string? clientId) => new()
     {
         ["client_id"] = clientId,
+        ["response_type"] = "code",
         ["scopes"] = new JsonArray(Scopes.Select(s => (JsonNode)s).ToArray()),
-        ["redirect_uri"] = Redirect,
     };
+
+    /// <summary>
+    /// Why AUTHORIZE was refused. <c>Missing "redirect_uri"</c> means the application has no saved redirect (#316), but
+    /// it reads like a fault in the request, so the message says where to add it.
+    /// </summary>
+    internal static string Refusal(string discordMessage) =>
+        discordMessage.Contains("Missing \"redirect_uri\"", StringComparison.Ordinal)
+            ? $"Discord login was refused ({discordMessage}). Add {Redirect} under OAuth2 › Redirects in the Discord Developer Portal and click Save Changes."
+            : $"Discord login was refused ({discordMessage}).";
 
     private async Task<string> Auth(string token, CancellationToken ct)
     {
@@ -272,14 +373,15 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
     private readonly Lock _imageLock = new();
     private static readonly HttpClient ImageHttp = new() { Timeout = TimeSpan.FromSeconds(10) };
 
-    /// <summary>Only icons and avatars the agent itself reported (a server's icon, a member of your current call) are served.</summary>
+    /// <summary>Only icons and avatars the agent itself reported (a server's icon, a member of your current call or of a favourite voice channel) are served.</summary>
     internal bool IsKnownImage(string kind, string id, string hash)
     {
         var s = _snap;
         return kind switch
         {
             "guild" => s.Channels.Any(c => c.GuildId == id && c.GuildIcon == hash),
-            "user" => s.Members.Any(m => m.Id == id && m.Avatar == hash),
+            "user" => s.Members.Any(m => m.Id == id && m.Avatar == hash)
+                || s.Channels.Any(c => c.People?.Any(m => m.Id == id && m.Avatar == hash) == true),
             _ => false,
         };
     }
@@ -351,6 +453,54 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
 
     private static string? JsonStr(JsonNode? node) => node is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
+    /// <summary>The people in a voice channel, from its <c>voice_states</c> (GET_SELECTED_VOICE_CHANNEL / GET_CHANNEL).</summary>
+    internal static List<DiscordMember> MembersOf(JsonNode? voiceStates) =>
+        voiceStates is JsonArray a
+            ? [.. a.Select(v => new DiscordMember(
+                JsonStr(v?["user"]?["id"]) ?? "",
+                JsonStr(v?["nick"]) ?? JsonStr(v?["user"]?["global_name"]) ?? JsonStr(v?["user"]?["username"]) ?? "?",
+                v?["voice_state"]?["mute"]?.GetValueKind() == JsonValueKind.True || v?["voice_state"]?["self_mute"]?.GetValueKind() == JsonValueKind.True,
+                v?["voice_state"]?["deaf"]?.GetValueKind() == JsonValueKind.True || v?["voice_state"]?["self_deaf"]?.GetValueKind() == JsonValueKind.True,
+                JsonStr(v?["user"]?["avatar"])))]
+            : [];
+
+    private static readonly TimeSpan RoomWait = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Who is in the favourite voice channels. Only channels with people are kept; one Discord refuses is left out until
+    /// the next pass, and when Discord is slow to answer the pass ends there instead of asking for the others too. Each
+    /// one is asked for only while it is still wanted: the widget's page or option may be turned off during a pass.
+    /// </summary>
+    internal async Task<Dictionary<string, IReadOnlyList<DiscordMember>>> ReadRooms(IReadOnlyList<DiscordChannel> wanted, CancellationToken ct, TimeSpan? wait = null, Func<string, bool>? stillWanted = null)
+    {
+        var rooms = new Dictionary<string, IReadOnlyList<DiscordMember>>();
+        foreach (var c in wanted)
+        {
+            if (ct.IsCancellationRequested) break;
+            if (stillWanted?.Invoke(c.Id) == false) continue;
+            try
+            {
+                var people = MembersOf((await Request("GET_CHANNEL", new JsonObject { ["channel_id"] = c.Id }, null, ct, wait ?? RoomWait))?["voice_states"]);
+                if (people.Count > 0) rooms[c.Id] = people;
+            }
+            catch (TimeoutException) { break; }
+            catch (Exception ex) when (ex is not OperationCanceledException) { log.LogDebug("discord: people in {Channel}: {Msg}", c.Id, ex.Message); }
+        }
+        return rooms;
+    }
+
+    /// <summary>Whether the agent reported this server ("guild") or voice channel ("channel"): favourites can only be ids from its own list.</summary>
+    public bool Knows(string kind, string id)
+    {
+        var s = _snap;
+        return kind switch
+        {
+            "guild" => s.Channels.Any(c => c.GuildId == id),
+            "channel" => s.Channels.Any(c => c.Id == id),
+            _ => false,
+        };
+    }
+
     internal async Task ReadLoop(Stream io, CancellationToken ct)
     {
         lock (_lock) _closed = false;
@@ -369,6 +519,11 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
                 }
                 if (op == 4 || msg is not JsonObject obj) continue; // PONG or non-object payload
                 var evt = JsonStr(obj["evt"]);
+                if (JsonStr(obj["cmd"]) == "DISPATCH" && evt is "SPEAKING_START" or "SPEAKING_STOP")
+                {
+                    ApplySpeaking(evt, obj["data"]);
+                    continue;
+                }
                 if (evt == "NOTIFICATION_CREATE")
                 {
                     if (!NotesNow() || obj["data"] is not JsonObject d) continue;
@@ -425,35 +580,59 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
     private int _voiceRev; // bumped each time a button press publishes new mute/deafen state
     private bool _closed;  // guarded by _lock: the current connection's ReadLoop has ended
 
-    /// <summary>Publishes a poll. A button press that finished since the poll read <paramref name="rev"/> is newer than what the poll saw, so it keeps its mute/deafen state.</summary>
+    /// <summary>Publishes a poll. A button press that finished since the poll read <paramref name="rev"/> is newer than what the poll saw, so it keeps its mute/deafen/input mode state.</summary>
     internal void PublishPoll(int rev, bool muted, bool deafened, DiscordSnapshot snapshot)
     {
         lock (_lock)
         {
             if (_closed) return; // the connection this poll came from has ended (ReadLoop)
             var stale = rev != _voiceRev;
-            _snap = snapshot with { Muted = stale ? _snap.Muted : muted, Deafened = stale ? _snap.Deafened : deafened };
+            _snap = stale
+                ? snapshot with { Muted = _snap.Muted, Deafened = _snap.Deafened, InputMode = _snap.InputMode, PttKey = _snap.PttKey }
+                : snapshot with { Muted = muted, Deafened = deafened };
         }
+    }
+
+    /// <summary>
+    /// Discord's input mode from GET_VOICE_SETTINGS / SET_VOICE_SETTINGS (<c>mode.type</c>), and whether a push-to-talk
+    /// key is set (<c>mode.shortcut</c> has keys). Anything other than the two known modes counts as unknown (null).
+    /// </summary>
+    internal static (string? Mode, bool PttKey) InputModeOf(JsonNode? vs)
+    {
+        if (vs?["mode"] is not JsonObject mode) return (null, false);
+        var type = JsonStr(mode["type"]);
+        return (type is "VOICE_ACTIVITY" or "PUSH_TO_TALK" ? type : null, mode["shortcut"] is JsonArray keys && keys.Count > 0);
     }
 
     internal int VoiceRevision => Volatile.Read(ref _voiceRev);
 
-    /// <summary>The widget's buttons: mute, deafen, leave, join (a voice channel id from the list the agent already sent).</summary>
+    /// <summary>
+    /// The widget's buttons: mute, deafen, inputmode (switch between voice activity and push to talk), leave, join (a
+    /// voice channel id from the list the agent already sent).
+    /// </summary>
     public async Task<string?> ActAsync(string action, string? channel)
     {
         if (!ControlAllowed(config.Get()))
-            return "controlling Discord is turned off in the widget's settings";
+            return "controlling Discord is turned off in the widget's settings and in Settings › General › Discord";
         await _act.WaitAsync();
         try
         {
             // Checked again here: the widget's option or page may have been switched off while this press was queued.
-            if (!ControlAllowed(config.Get())) return "controlling Discord is turned off in the widget's settings";
+            if (!ControlAllowed(config.Get())) return "controlling Discord is turned off in the widget's settings and in Settings › General › Discord";
             var s = _snap;
             if (!s.Connected) return "Discord is not connected";
             switch (action)
             {
                 case "mute": ApplyVoice(await Request("SET_VOICE_SETTINGS", new JsonObject { ["mute"] = !s.Muted }, null, CancellationToken.None)); break;
                 case "deafen": ApplyVoice(await Request("SET_VOICE_SETTINGS", new JsonObject { ["deaf"] = !s.Deafened }, null, CancellationToken.None)); break;
+                // Only the mode's type is sent, so Discord keeps the push-to-talk key, delay and sensitivity as they are.
+                case "inputmode" when s.InputMode is not null:
+                    ApplyVoice(await Request("SET_VOICE_SETTINGS", new JsonObject
+                    {
+                        ["mode"] = new JsonObject { ["type"] = s.InputMode == "PUSH_TO_TALK" ? "VOICE_ACTIVITY" : "PUSH_TO_TALK" },
+                    }, null, CancellationToken.None));
+                    break;
+                case "inputmode": return "Discord has not reported its input mode yet";
                 case "leave": await Request("SELECT_VOICE_CHANNEL", new JsonObject { ["channel_id"] = null }, null, CancellationToken.None); break;
                 case "join" when !string.IsNullOrEmpty(channel) && s.Channels.Any(c => c.Id == channel):
                     await Request("SELECT_VOICE_CHANNEL", new JsonObject { ["channel_id"] = channel, ["force"] = true }, null, CancellationToken.None); break;
@@ -466,19 +645,30 @@ public sealed partial class DiscordMonitor(ConfigStore config, ILogger<DiscordMo
         finally { _act.Release(); }
     }
 
-    /// <summary>Control needs a Discord widget with the control option on, on a page that is enabled.</summary>
+    /// <summary>
+    /// Control needs a Discord widget with the control option on, on a page that is enabled, or the global
+    /// <see cref="DiscordConfig.AllowControl"/> switch (off by default) for shortcuts and custom widgets.
+    /// </summary>
     public static bool ControlAllowed(AgentConfig cfg) =>
-        cfg.Widgets(enabledPagesOnly: true).Any(w => w.Type == "discord" && w.Bool("control") == true);
+        cfg.Discord.AllowControl
+        || cfg.Widgets(enabledPagesOnly: true).Any(w => w.Type == "discord" && w.Bool("control") == true);
 
     // Discord answers a settings change with the new settings; take the state from that, not from the next poll.
     internal void ApplyVoice(JsonNode? vs)
     {
         if (vs is null) return;
+        var (mode, pttKey) = InputModeOf(vs);
         lock (_lock)
         {
             var s = _snap;
             _voiceRev++;
-            _snap = s with { Muted = vs["mute"]?.GetValue<bool>() ?? s.Muted, Deafened = vs["deaf"]?.GetValue<bool>() ?? s.Deafened };
+            _snap = s with
+            {
+                Muted = vs["mute"]?.GetValue<bool>() ?? s.Muted,
+                Deafened = vs["deaf"]?.GetValue<bool>() ?? s.Deafened,
+                InputMode = mode ?? s.InputMode,
+                PttKey = mode is null ? s.PttKey : pttKey,
+            };
         }
     }
 

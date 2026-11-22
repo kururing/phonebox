@@ -479,6 +479,28 @@ test('the live preview in the layout editor runs the real panel', async ({ page 
   await expect.poll(() => preview.locator('#dots i').evaluateAll((d) => d.findIndex((x) => x.classList.contains('on')))).toBe(2);
 });
 
+test('the live preview does not enter unreachable night mode', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-01-01T12:00:00Z') });
+  await page.goto('/panel/');
+  await page.evaluate(() => {
+    const iframe = document.createElement('iframe');
+    iframe.id = 'night-preview';
+    iframe.src = '/panel/?preview=1';
+    document.body.appendChild(iframe);
+  });
+  const preview = page.frameLocator('#night-preview');
+  await expect(preview.locator('.w').first()).toBeVisible();
+  await preview.locator('body').evaluate(async () => {
+    const panel = await import('/panel/main.js');
+    panel.cfg.night.enabled = false;
+    panel.cfg.display.nightWhenUnreachable = true;
+    panel.cfg.display.unreachableNightDelayMin = 1;
+    panel.setOnline(false);
+  });
+  await page.clock.runFor(61_000);
+  await expect(preview.locator('body')).not.toHaveClass(/(^|\s)night($|\s)/);
+});
+
 test('rule options and page switching settings are there', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 860 });
   await page.goto('/settings/#rules');

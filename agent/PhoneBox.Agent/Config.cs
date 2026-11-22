@@ -21,6 +21,11 @@ public sealed class AgentConfig
     public ClaudeConfig Claude { get; set; } = new();
     /// <summary>Cursor agent-transcript sessions on the AI sessions widget (off by default).</summary>
     public CursorConfig Cursor { get; set; } = new();
+    /// <summary>Antigravity chats on the AI sessions widget (off by default).</summary>
+    public AntigravityConfig Antigravity { get; set; } = new();
+    /// <summary>OpenCode prompts and sessions on the phone; everything is off until the settings page turns it on.</summary>
+    [JsonPropertyName("opencode")]
+    public OpenCodeConfig OpenCode { get; set; } = new();
     public List<PageConfig> Pages { get; set; } = [];
     public List<Shortcut> Shortcuts { get; set; } = [];
     public List<RuleConfig> Rules { get; set; } = [];
@@ -85,6 +90,8 @@ public sealed class AgentConfig
         // names only (for the Rules widget); what a rule matches on stays here
         rules = Rules.Select(r => new { r.Id, r.Name, r.Enabled, r.When }),
         charge = new { Charge.Enabled, Charge.Min, Charge.Max },
+        // OpenCode prompts: how long the Allow always button waits before it can be pressed (it saves a pattern)
+        opencode = new { OpenCode.AlwaysCountdownSec },
     };
 
     /// <summary>Ending processes is allowed when an enabled page has a processes widget that allows it.</summary>
@@ -158,7 +165,7 @@ public sealed class DisplayConfig
     public string Language { get; set; } = "auto";
     /// <summary>The codes the panel and the settings page are translated into (i18n.js). Casing matters for pt-BR:
     /// it is a distinct entry from pt, not a variant of it, so it must survive a save in this exact form.</summary>
-    internal static readonly string[] Languages = ["auto", "en", "tr", "de", "fr", "es", "it", "pt", "pt-BR", "nl", "pl", "ru", "el", "vi", "zh"];
+    internal static readonly string[] Languages = ["auto", "en", "tr", "de", "fr", "es", "it", "pt", "pt-BR", "nl", "pl", "ru", "el", "vi", "zh", "ja", "ko", "id", "th", "uk", "hi", "cs", "ar", "zh-Hant"];
     public bool ShowSeconds { get; set; } = true;
     /// <summary>false ("14:05", default), true ("2:05 PM") or "auto" (follow the phone).</summary>
     [JsonConverter(typeof(Hour12JsonConverter))]
@@ -183,6 +190,10 @@ public sealed class DisplayConfig
     public bool AutoBrightness { get; set; }
     /// <summary>Show the night screen whenever the room is dark, not only at night.</summary>
     public bool NightWhenDark { get; set; }
+    /// <summary>Show the night screen after the paired computer's agent has been unreachable for a while.</summary>
+    public bool NightWhenUnreachable { get; set; }
+    /// <summary>Minutes to wait after the agent becomes unreachable before showing the night screen.</summary>
+    public int UnreachableNightDelayMin { get; set; } = 5;
     /// <summary>A hand near the phone (proximity sensor) wakes the night screen.</summary>
     public bool ProximityWake { get; set; } = true;
     /// <summary>OLED burn-in protection: every 2 minutes the panel moves by a few pixels and the night clock drifts.</summary>
@@ -253,6 +264,34 @@ public sealed class CursorConfig
 {
     /// <summary>Show recent Cursor agent chats on the AI sessions widget (off by default).</summary>
     public bool Sessions { get; set; }
+}
+
+public sealed class AntigravityConfig
+{
+    /// <summary>Show recent Antigravity chats on the AI sessions widget (off by default).</summary>
+    public bool Sessions { get; set; }
+    /// <summary>Show each Antigravity chat's title from its local annotation file on the phone (off by default).</summary>
+    public bool ShareSessionTitles { get; set; }
+}
+
+public sealed class OpenCodeConfig
+{
+    /// <summary>Show OpenCode permission prompts on the phone. Off until Settings › General turns it on: letting the
+    /// phone approve commands is opt-in, like Claude Code's hook install.</summary>
+    public bool PhoneApprovals { get; set; }
+    /// <summary>Show recent OpenCode sessions on the AI sessions widget (off by default, like Cursor's).</summary>
+    public bool Sessions { get; set; }
+    /// <summary>How long the phone may answer before the prompt is left to OpenCode's own window on the desktop.</summary>
+    public int TimeoutSec { get; set; } = 90;
+    /// <summary>Only use the phone when the PC has been idle for a minute (OpenCode's own prompt is on the screen otherwise).</summary>
+    public bool OnlyWhenAway { get; set; }
+    /// <summary>Seconds the Allow always button waits before it can be pressed (it saves a pattern for the project); 0 arms it at once.</summary>
+    public int AlwaysCountdownSec { get; set; } = 10;
+    /// <summary>Also watch OpenCode inside WSL distros that are already running (see OpenCodeServices); off until turned on.</summary>
+    public bool WatchWsl { get; set; }
+    /// <summary>Show each OpenCode session's title on the phone. OpenCode draws the titles from the conversation,
+    /// so they stay off the phone until you turn this on, like Claude's shareSessionTitles.</summary>
+    public bool ShareSessionTitles { get; set; }
 }
 
 public sealed class PageConfig
@@ -370,6 +409,12 @@ public sealed class DiscordConfig
     public bool Enabled { get; set; }
     public string? ClientId { get; set; }
     public string? ClientSecret { get; set; }
+    /// <summary>
+    /// Allow mute, deafen, leave and join through <c>/api/discord/{action}</c> without a Discord widget: for shortcuts,
+    /// scripts and custom widgets. Off by default; then only a Discord widget with its <c>control</c> option on, on an
+    /// enabled page, allows them.
+    /// </summary>
+    public bool AllowControl { get; set; }
 }
 
 public sealed class SteamConfig
@@ -398,6 +443,7 @@ public sealed class FeedSource
 {
     public string Name { get; set; } = "";
     public string Url { get; set; } = "";
+    public string Category { get; set; } = "";
 }
 
 public sealed class CalendarSource
@@ -585,11 +631,17 @@ public sealed partial class ConfigStore(string path)
         foreach (var action in c.Controls.Actions) { action.Target ??= ""; action.Kind ??= "shortcut"; action.Label ??= action.Id; }
         c.Controls.Profiles = c.Controls.Profiles.Where(p => p is not null && !string.IsNullOrWhiteSpace(p.Id)).DistinctBy(p => p.Id).Take(128).ToList();
         foreach (var profile in c.Controls.Profiles) { profile.Levels = (profile.Levels ?? []).Where(l => l is not null).Take(512).ToList(); profile.Defaults ??= []; profile.Actions = (profile.Actions ?? []).Where(a => !string.IsNullOrEmpty(a)).Take(64).ToList(); profile.Label ??= profile.Id; }
+        c.Controls.PlexUrl = PlexControl.NormalizeUrl(c.Controls.PlexUrl);
+        c.Controls.PlexPlayerUrl = PlexControl.NormalizeUrl(c.Controls.PlexPlayerUrl) ?? PlexControl.DefaultPlayerUrl;
+        // a control character (a stray newline from a paste) can't be part of a token, and would break the request header
+        c.Controls.PlexToken = new string((c.Controls.PlexToken ?? "").Where(ch => !char.IsControl(ch)).ToArray()).Trim() is { Length: > 0 } plexToken
+            ? Cap(plexToken, 256) : null;
         c.Display ??= new();
         c.Display.Appearance?.Normalize();
         c.Display.Hour12 = Hour12JsonConverter.Normalize(c.Display.Hour12);
         c.Display.IdleReturnSec = Math.Clamp(c.Display.IdleReturnSec, 0, 3600);
         c.Display.IdleDimMin = Math.Clamp(c.Display.IdleDimMin, 0, 1440);
+        c.Display.UnreachableNightDelayMin = Math.Clamp(c.Display.UnreachableNightDelayMin, 1, 30);
         // a language the panel does not have falls back to following the phone / browser. Matched case-insensitively
         // so "PT-br" still resolves, but stored in its canonical casing: i18n.js looks pt-BR up by exact code.
         var lang = (c.Display.Language ?? "").Trim();
@@ -606,6 +658,10 @@ public sealed partial class ConfigStore(string path)
         c.Claude ??= new();
         c.Claude.TimeoutSec = Math.Clamp(c.Claude.TimeoutSec, 10, 3600);
         c.Cursor ??= new();
+        c.Antigravity ??= new();
+        c.OpenCode ??= new();
+        c.OpenCode.TimeoutSec = Math.Clamp(c.OpenCode.TimeoutSec, 10, 3600);
+        c.OpenCode.AlwaysCountdownSec = Math.Clamp(c.OpenCode.AlwaysCountdownSec, 0, 60);
         if (string.IsNullOrWhiteSpace(c.Updates.Repo)) c.Updates.Repo = "ersinkoc/phonebox";
         c.Lan.Port = Math.Clamp(c.Lan.Port, 1024, 65535);
         if (string.IsNullOrWhiteSpace(c.Lan.Token)) c.Lan.Token = NewToken();
@@ -722,7 +778,14 @@ public sealed partial class ConfigStore(string path)
         c.Photos.ImmichKey = Cap(new string((c.Photos.ImmichKey ?? "").Where(ch => !char.IsControl(ch)).ToArray()).Trim(), 256);
         c.Photos.ImmichAlbum = Cap((c.Photos.ImmichAlbum ?? "").Trim(), 64);
         c.Photos.ImmichAlbumName = Cap((c.Photos.ImmichAlbumName ?? "").Trim(), 200);
-        foreach (var f in c.Feeds) { var n = f.Name?.Trim() ?? ""; f.Name = n.Length > 60 ? n[..60] : n; f.Url = f.Url?.Trim() ?? ""; }
+        foreach (var f in c.Feeds)
+        {
+            var n = f.Name?.Trim() ?? "";
+            f.Name = n.Length > 60 ? n[..60] : n;
+            f.Url = f.Url?.Trim() ?? "";
+            var cat = f.Category?.Trim() ?? "";
+            f.Category = cat.Length > 40 ? cat[..40] : cat;
+        }
         c.Cameras ??= new();
         c.Cameras.Ffmpeg = (c.Cameras.Ffmpeg ?? "").Trim() is { Length: > 1024 } longFfmpeg ? longFfmpeg[..1024] : (c.Cameras.Ffmpeg ?? "").Trim();
         // a row left empty in the editor is dropped; ids are random and kept, so widgets keep pointing at the same camera
